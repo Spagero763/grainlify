@@ -1,6 +1,6 @@
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, Map, Symbol};
 #[cfg(test)]
 use soroban_sdk::{contract, contractimpl};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, Map, Symbol};
 
 /// Lifecycle state for a governance proposal.
 #[derive(Clone, Debug, Eq, PartialEq)]
