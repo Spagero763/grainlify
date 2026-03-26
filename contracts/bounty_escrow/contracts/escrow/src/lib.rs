@@ -29,15 +29,16 @@ mod test_deterministic_error_ordering;
 
 use events::{
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized,
-    emit_deprecation_state_changed, emit_deterministic_selection, emit_funds_locked,
-    emit_funds_locked_anon, emit_funds_refunded, emit_funds_released,
-    emit_maintenance_mode_changed, emit_notification_preferences_updated,
-    emit_participant_filter_mode_changed, emit_risk_flags_updated, emit_ticket_claimed,
-    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
-    ClaimCancelled, ClaimCreated, ClaimExecuted, CriticalOperationOutcome, DeprecationStateChanged,
-    DeterministicSelectionDerived, FundsLocked, FundsLockedAnon, FundsRefunded, FundsReleased,
-    MaintenanceModeChanged, NotificationPreferencesUpdated, ParticipantFilterModeChanged,
-    RiskFlagsUpdated, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
+    emit_deprecation_state_changed, emit_deterministic_selection, emit_escrow_cleaned_up,
+    emit_escrow_expired, emit_expiry_config_updated, emit_funds_locked, emit_funds_locked_anon,
+    emit_funds_refunded, emit_funds_released, emit_maintenance_mode_changed,
+    emit_notification_preferences_updated, emit_participant_filter_mode_changed,
+    emit_risk_flags_updated, emit_ticket_claimed, emit_ticket_issued, BatchFundsLocked,
+    BatchFundsReleased, BountyEscrowInitialized, ClaimCancelled, ClaimCreated, ClaimExecuted,
+    CriticalOperationOutcome, DeprecationStateChanged, DeterministicSelectionDerived,
+    EscrowCleanedUp, EscrowExpired, ExpiryConfigUpdated, FundsLocked, FundsLockedAnon,
+    FundsRefunded, FundsReleased, MaintenanceModeChanged, NotificationPreferencesUpdated,
+    ParticipantFilterModeChanged, RiskFlagsUpdated, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -604,6 +605,12 @@ pub enum Error {
     InvalidSelectionInput = 42,
     /// Returned when an upgrade safety pre-check fails
     UpgradeSafetyCheckFailed = 43,
+    /// Returned when attempting to clean up an escrow that still holds funds
+    EscrowNotEmpty = 44,
+    /// Returned when attempting to clean up an escrow that has not expired
+    EscrowNotExpired = 45,
+    /// Returned when the escrow has already been marked as expired
+    EscrowAlreadyExpired = 46,
 }
 
 /// Bit flag: escrow or payout should be treated as elevated risk (indexers, UIs).
@@ -639,6 +646,7 @@ pub enum EscrowStatus {
     Released,
     Refunded,
     PartiallyRefunded,
+    Expired,
 }
 
 #[contracttype]
@@ -653,6 +661,10 @@ pub struct Escrow {
     pub status: EscrowStatus,
     pub deadline: u64,
     pub refund_history: Vec<RefundRecord>,
+    /// Ledger timestamp when this escrow was created.
+    pub creation_timestamp: u64,
+    /// Optional expiry ledger timestamp. If set and reached, the escrow can be cleaned up.
+    pub expiry: u64,
 }
 
 /// Mutually exclusive participant filtering mode for lock_funds / batch_lock_funds.
@@ -695,6 +707,10 @@ pub struct AnonymousEscrow {
     pub status: EscrowStatus,
     pub deadline: u64,
     pub refund_history: Vec<RefundRecord>,
+    /// Ledger timestamp when this escrow was created.
+    pub creation_timestamp: u64,
+    /// Optional expiry ledger timestamp. If set and reached, the escrow can be cleaned up.
+    pub expiry: u64,
 }
 
 /// Depositor identity: either a concrete address (non-anon) or a 32-byte commitment (anon).
@@ -715,6 +731,8 @@ pub struct EscrowInfo {
     pub status: EscrowStatus,
     pub deadline: u64,
     pub refund_history: Vec<RefundRecord>,
+    pub creation_timestamp: u64,
+    pub expiry: u64,
 }
 
 #[contracttype]
@@ -762,6 +780,9 @@ pub enum DataKey {
     NetworkId,
 
     MaintenanceMode, // bool flag
+
+    /// Global expiry configuration for escrow auto-cleanup
+    ExpiryConfig,
 }
 
 #[contracttype]
@@ -841,6 +862,21 @@ pub struct TokenFeeConfig {
     pub fee_recipient: Address,
     /// Whether fee collection is active for this token.
     pub fee_enabled: bool,
+}
+
+/// Configuration for escrow expiry and auto-cleanup.
+///
+/// When set, newly created escrows receive an `expiry` timestamp computed as
+/// `creation_timestamp + default_expiry_duration`.  Escrows past their expiry
+/// with zero remaining balance can be cleaned up (storage removed) by the admin
+/// or an automated maintenance call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpiryConfig {
+    /// Default duration (in seconds) added to `creation_timestamp` to compute expiry.
+    pub default_expiry_duration: u64,
+    /// If true, cleanup of zero-balance expired escrows is enabled.
+    pub auto_cleanup_enabled: bool,
 }
 
 #[contracttype]
@@ -1556,6 +1592,341 @@ impl BountyEscrowContract {
         Ok(())
     }
 
+    // ========================================================================
+    // ESCROW EXPIRY & AUTO-CLEANUP
+    // ========================================================================
+
+    /// Set or update the global expiry configuration.  Admin only.
+    ///
+    /// `default_expiry_duration` is the number of seconds added to the creation
+    /// timestamp of each newly locked escrow to compute its expiry.  Setting it
+    /// to 0 disables expiry for future escrows (existing ones keep their value).
+    pub fn set_expiry_config(
+        env: Env,
+        default_expiry_duration: u64,
+        auto_cleanup_enabled: bool,
+    ) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let config = ExpiryConfig {
+            default_expiry_duration,
+            auto_cleanup_enabled,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ExpiryConfig, &config);
+
+        emit_expiry_config_updated(
+            &env,
+            ExpiryConfigUpdated {
+                default_expiry_duration,
+                auto_cleanup_enabled,
+                admin: admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the current expiry configuration, if set.
+    pub fn get_expiry_config(env: Env) -> Option<ExpiryConfig> {
+        env.storage()
+            .instance()
+            .get::<DataKey, ExpiryConfig>(&DataKey::ExpiryConfig)
+    }
+
+    /// Query escrows that are past their expiry timestamp and still in `Locked` status.
+    ///
+    /// Returns paginated results matching: `expiry > 0 && expiry <= now && status == Locked`.
+    pub fn query_expired_escrows(env: Env, offset: u32, limit: u32) -> Vec<EscrowWithId> {
+        let index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowIndex)
+            .unwrap_or(Vec::new(&env));
+        let now = env.ledger().timestamp();
+        let mut results = Vec::new(&env);
+        let mut count = 0u32;
+        let mut skipped = 0u32;
+
+        for i in 0..index.len() {
+            if count >= limit {
+                break;
+            }
+            let bounty_id = index.get(i).unwrap();
+            if let Some(escrow) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Escrow>(&DataKey::Escrow(bounty_id))
+            {
+                if escrow.expiry > 0 && escrow.expiry <= now && escrow.status == EscrowStatus::Locked
+                {
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+                    results.push_back(EscrowWithId { bounty_id, escrow });
+                    count += 1;
+                }
+            }
+        }
+        results
+    }
+
+    /// Mark a single escrow as expired.  Admin only.
+    ///
+    /// The escrow must be in `Locked` status, have a non-zero `expiry` that is
+    /// at or before the current ledger timestamp, and have a zero remaining
+    /// balance.  Escrows still holding funds cannot be expired — they must be
+    /// refunded or released first.
+    pub fn mark_escrow_expired(env: Env, bounty_id: u64) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(bounty_id))
+            .ok_or(Error::BountyNotFound)?;
+
+        if escrow.status == EscrowStatus::Expired {
+            return Err(Error::EscrowAlreadyExpired);
+        }
+        if escrow.status != EscrowStatus::Locked {
+            return Err(Error::FundsNotLocked);
+        }
+
+        let now = env.ledger().timestamp();
+        if escrow.expiry == 0 || escrow.expiry > now {
+            return Err(Error::EscrowNotExpired);
+        }
+        if escrow.remaining_amount != 0 {
+            return Err(Error::EscrowNotEmpty);
+        }
+
+        escrow.status = EscrowStatus::Expired;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(bounty_id), &escrow);
+
+        emit_escrow_expired(
+            &env,
+            EscrowExpired {
+                version: EVENT_VERSION_V2,
+                bounty_id,
+                creation_timestamp: escrow.creation_timestamp,
+                expiry: escrow.expiry,
+                remaining_amount: escrow.remaining_amount,
+                timestamp: now,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove an expired, zero-balance escrow from storage entirely.  Admin only.
+    ///
+    /// The escrow must be in `Expired` status and have `remaining_amount == 0`.
+    /// This frees persistent storage and removes the bounty_id from the global
+    /// and depositor indexes.
+    pub fn cleanup_expired_escrow(env: Env, bounty_id: u64) -> Result<(), Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(bounty_id))
+            .ok_or(Error::BountyNotFound)?;
+
+        if escrow.status != EscrowStatus::Expired {
+            return Err(Error::EscrowNotExpired);
+        }
+        if escrow.remaining_amount != 0 {
+            return Err(Error::EscrowNotEmpty);
+        }
+
+        // Remove escrow record
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Escrow(bounty_id));
+
+        // Remove from global index
+        let index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowIndex)
+            .unwrap_or(Vec::new(&env));
+        let mut new_index: Vec<u64> = Vec::new(&env);
+        for i in 0..index.len() {
+            let id = index.get(i).unwrap();
+            if id != bounty_id {
+                new_index.push_back(id);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowIndex, &new_index);
+
+        // Remove from depositor index
+        let mut dep_index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DepositorIndex(escrow.depositor.clone()))
+            .unwrap_or(Vec::new(&env));
+        let mut new_dep_index: Vec<u64> = Vec::new(&env);
+        for i in 0..dep_index.len() {
+            let id = dep_index.get(i).unwrap();
+            if id != bounty_id {
+                new_dep_index.push_back(id);
+            }
+        }
+        env.storage().persistent().set(
+            &DataKey::DepositorIndex(escrow.depositor.clone()),
+            &new_dep_index,
+        );
+
+        // Remove metadata if present
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Metadata(bounty_id))
+        {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Metadata(bounty_id));
+        }
+
+        let now = env.ledger().timestamp();
+        emit_escrow_cleaned_up(
+            &env,
+            EscrowCleanedUp {
+                version: EVENT_VERSION_V2,
+                bounty_id,
+                cleaned_by: admin.clone(),
+                timestamp: now,
+            },
+        );
+        Ok(())
+    }
+
+    /// Batch cleanup of expired, zero-balance escrows.  Admin only.
+    ///
+    /// Iterates the escrow index and cleans up up to `limit` eligible escrows
+    /// (status == Expired, remaining_amount == 0).  Returns the number of
+    /// escrows cleaned up.
+    pub fn batch_cleanup_expired_escrows(env: Env, limit: u32) -> Result<u32, Error> {
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let index: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowIndex)
+            .unwrap_or(Vec::new(&env));
+
+        let now = env.ledger().timestamp();
+        let mut cleaned = 0u32;
+        let mut to_remove: Vec<u64> = Vec::new(&env);
+
+        // Identify expired escrows eligible for cleanup
+        for i in 0..index.len() {
+            if cleaned >= limit {
+                break;
+            }
+            let bounty_id = index.get(i).unwrap();
+            if let Some(escrow) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Escrow>(&DataKey::Escrow(bounty_id))
+            {
+                if escrow.status == EscrowStatus::Expired && escrow.remaining_amount == 0 {
+                    // Remove escrow record
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Escrow(bounty_id));
+
+                    // Remove from depositor index
+                    let dep_index: Vec<u64> = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::DepositorIndex(escrow.depositor.clone()))
+                        .unwrap_or(Vec::new(&env));
+                    let mut new_dep_index: Vec<u64> = Vec::new(&env);
+                    for j in 0..dep_index.len() {
+                        let id = dep_index.get(j).unwrap();
+                        if id != bounty_id {
+                            new_dep_index.push_back(id);
+                        }
+                    }
+                    env.storage().persistent().set(
+                        &DataKey::DepositorIndex(escrow.depositor.clone()),
+                        &new_dep_index,
+                    );
+
+                    // Remove metadata if present
+                    if env
+                        .storage()
+                        .persistent()
+                        .has(&DataKey::Metadata(bounty_id))
+                    {
+                        env.storage()
+                            .persistent()
+                            .remove(&DataKey::Metadata(bounty_id));
+                    }
+
+                    to_remove.push_back(bounty_id);
+
+                    emit_escrow_cleaned_up(
+                        &env,
+                        EscrowCleanedUp {
+                            version: EVENT_VERSION_V2,
+                            bounty_id,
+                            cleaned_by: admin.clone(),
+                            timestamp: now,
+                        },
+                    );
+                    cleaned += 1;
+                }
+            }
+        }
+
+        // Rebuild global index excluding removed bounty ids
+        if cleaned > 0 {
+            let mut new_index: Vec<u64> = Vec::new(&env);
+            for i in 0..index.len() {
+                let id = index.get(i).unwrap();
+                let mut removed = false;
+                for j in 0..to_remove.len() {
+                    if to_remove.get(j).unwrap() == id {
+                        removed = true;
+                        break;
+                    }
+                }
+                if !removed {
+                    new_index.push_back(id);
+                }
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::EscrowIndex, &new_index);
+        }
+
+        Ok(cleaned)
+    }
+
     fn next_capability_id(env: &Env) -> u64 {
         let last_id: u64 = env
             .storage()
@@ -2227,6 +2598,14 @@ impl BountyEscrowContract {
         }
         soroban_sdk::log!(&env, "fee ok");
 
+        let now = env.ledger().timestamp();
+        let expiry = env
+            .storage()
+            .instance()
+            .get::<DataKey, ExpiryConfig>(&DataKey::ExpiryConfig)
+            .map(|cfg| now + cfg.default_expiry_duration)
+            .unwrap_or(0);
+
         let escrow = Escrow {
             depositor: depositor.clone(),
             amount: net_amount,
@@ -2234,6 +2613,8 @@ impl BountyEscrowContract {
             deadline,
             refund_history: vec![&env],
             remaining_amount: net_amount,
+            creation_timestamp: now,
+            expiry,
         };
         invariants::assert_escrow(&env, &escrow);
 
@@ -2468,6 +2849,14 @@ impl BountyEscrowContract {
             }
         }
 
+        let now = env.ledger().timestamp();
+        let expiry = env
+            .storage()
+            .instance()
+            .get::<DataKey, ExpiryConfig>(&DataKey::ExpiryConfig)
+            .map(|cfg| now + cfg.default_expiry_duration)
+            .unwrap_or(0);
+
         let escrow_anon = AnonymousEscrow {
             depositor_commitment: depositor_commitment.clone(),
             amount,
@@ -2475,6 +2864,8 @@ impl BountyEscrowContract {
             status: EscrowStatus::Locked,
             deadline,
             refund_history: vec![&env],
+            creation_timestamp: now,
+            expiry,
         };
 
         env.storage()
@@ -3886,6 +4277,9 @@ impl BountyEscrowContract {
                         stats.total_refunded += escrow.amount;
                         stats.count_refunded += 1;
                     }
+                    EscrowStatus::Expired => {
+                        // Expired escrows are not counted in aggregate stats
+                    }
                 }
             }
         }
@@ -4306,6 +4700,14 @@ impl BountyEscrowContract {
                 }
             }
 
+            // Resolve expiry config once for the batch
+            let expiry_offset = env
+                .storage()
+                .instance()
+                .get::<DataKey, ExpiryConfig>(&DataKey::ExpiryConfig)
+                .map(|cfg| cfg.default_expiry_duration)
+                .unwrap_or(0);
+
             // Process all items (atomic - all succeed or all fail)
             // First loop: write all state (escrow, indices). Second loop: transfers + events.
             let mut locked_count = 0u32;
@@ -4317,6 +4719,12 @@ impl BountyEscrowContract {
                     deadline: item.deadline,
                     refund_history: vec![&env],
                     remaining_amount: item.amount,
+                    creation_timestamp: timestamp,
+                    expiry: if expiry_offset > 0 {
+                        timestamp + expiry_offset
+                    } else {
+                        0
+                    },
                 };
 
                 env.storage()
@@ -5286,6 +5694,8 @@ mod escrow_status_transition_tests {
             status,
             deadline,
             refund_history: vec![env],
+            creation_timestamp: 0,
+            expiry: 0,
         }
     }
 
@@ -5688,3 +6098,5 @@ mod test_serialization_compatibility;
 mod test_status_transitions;
 #[cfg(test)]
 mod test_upgrade_scenarios;
+#[cfg(test)]
+mod test_escrow_expiry;
