@@ -503,9 +503,9 @@ mod monitoring {
 #[cfg(test)]
 mod test_core_monitoring;
 #[cfg(test)]
-mod test_serialization_compatibility;
-#[cfg(test)]
 mod test_pseudo_randomness;
+#[cfg(test)]
+mod test_serialization_compatibility;
 #[cfg(test)]
 mod test_version_helpers;
 
@@ -1267,6 +1267,8 @@ impl GrainlifyContract {
     /// All instance storage is preserved across the WASM replacement.
     pub fn execute_upgrade(env: Env, proposal_id: u64) {
         let start = env.ledger().timestamp();
+        let upgrade_op = Symbol::new(&env, "execute_upgrade");
+        let upgrade_exec = Symbol::new(&env, "upgrade_executed");
 
         // Security: Verify contract state is consistent before upgrade
         if !monitoring::verify_invariants(&env) {
@@ -1292,6 +1294,7 @@ impl GrainlifyContract {
 
         let proposal =
             Self::load_upgrade_proposal(&env, proposal_id).expect("Missing upgrade proposal");
+        let wasm_hash = proposal.wasm_hash.clone();
 
         // Store previous version for rollback tracking
         let current_version = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
@@ -1301,7 +1304,7 @@ impl GrainlifyContract {
 
         // Perform WASM upgrade — instance storage is preserved
         env.deployer()
-            .update_current_contract_wasm(proposal.wasm_hash.clone());
+            .update_current_contract_wasm(wasm_hash.clone());
 
         // Emit structured upgrade event for off-chain indexers
         env.events().publish(

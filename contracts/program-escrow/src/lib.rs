@@ -193,12 +193,12 @@ pub const DELEGATE_PERMISSION_MASK: u32 = DELEGATE_PERMISSION_RELEASE
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeConfig {
-    pub lock_fee_rate: i128, // Fee rate for lock operations (basis points)
-    pub payout_fee_rate: i128, // Fee rate for each payout (basis points of gross payout)
-    pub lock_fixed_fee: i128, // Flat fee on lock (token units), capped to lock amount
+    pub lock_fee_rate: i128,    // Fee rate for lock operations (basis points)
+    pub payout_fee_rate: i128,  // Fee rate for each payout (basis points of gross payout)
+    pub lock_fixed_fee: i128,   // Flat fee on lock (token units), capped to lock amount
     pub payout_fixed_fee: i128, // Flat fee per payout (token units), capped to gross payout
     pub fee_recipient: Address, // Address to receive fees
-    pub fee_enabled: bool,    // Global fee enable/disable flag
+    pub fee_enabled: bool,      // Global fee enable/disable flag
 }
 
 #[contracttype]
@@ -1076,6 +1076,8 @@ impl ProgramEscrowContract {
                 &FeeConfig {
                     lock_fee_rate: 0,
                     payout_fee_rate: 0,
+                    lock_fixed_fee: 0,
+                    payout_fixed_fee: 0,
                     fee_recipient: authorized_payout_key.clone(),
                     fee_enabled: false,
                 },
@@ -1289,12 +1291,7 @@ impl ProgramEscrowContract {
     }
 
     /// Percentage + fixed fee, capped to `amount`.
-    fn combined_fee_amount(
-        amount: i128,
-        rate_bps: i128,
-        fixed: i128,
-        fee_enabled: bool,
-    ) -> i128 {
+    fn combined_fee_amount(amount: i128, rate_bps: i128, fixed: i128, fee_enabled: bool) -> i128 {
         if !fee_enabled || amount <= 0 || fixed < 0 {
             return 0;
         }
@@ -1451,36 +1448,40 @@ impl ProgramEscrowContract {
         let fee_config = Self::get_fee_config_internal(&env);
 
         // Calculate fees if enabled
-        let (fee_amount, net_amount) = if fee_config.fee_enabled && fee_config.lock_fee_rate > 0 {
-            let (fee, net) = token_math::split_amount(amount, fee_config.lock_fee_rate);
-            (fee, net)
-        } else {
-            (0i128, amount)
-        };
+        let fee_amount = Self::combined_fee_amount(
+            amount,
+            fee_config.lock_fee_rate,
+            fee_config.lock_fixed_fee,
+            fee_config.fee_enabled,
+        );
+        let net_amount = amount.checked_sub(fee_amount).unwrap_or(0);
+        if net_amount <= 0 {
+            panic!("Lock fee consumes entire lock amount");
+        }
 
         let contract_address = env.current_contract_address();
         let token_client = token::Client::new(&env, &program_data.token_address);
-        if fee > 0 {
-            token_client.transfer(&contract_address, &cfg.fee_recipient, &fee);
+        if fee_amount > 0 {
+            token_client.transfer(&contract_address, &fee_config.fee_recipient, &fee_amount);
             Self::emit_fee_collected(
                 &env,
                 symbol_short!("lock"),
-                fee,
-                cfg.lock_fee_rate,
-                cfg.lock_fixed_fee,
-                cfg.fee_recipient.clone(),
+                fee_amount,
+                fee_config.lock_fee_rate,
+                fee_config.lock_fixed_fee,
+                fee_config.fee_recipient.clone(),
             );
         }
 
         // Credit net amount to program accounting (gross `amount` should already be on contract balance)
         program_data.total_funds = program_data
             .total_funds
-            .checked_add(net)
+            .checked_add(net_amount)
             .unwrap_or_else(|| panic!("Total funds overflow"));
 
         program_data.remaining_balance = program_data
             .remaining_balance
-            .checked_add(net)
+            .checked_add(net_amount)
             .unwrap_or_else(|| panic!("Remaining balance overflow"));
 
         // Store updated data
@@ -1492,7 +1493,7 @@ impl ProgramEscrowContract {
             FundsLockedEvent {
                 version: EVENT_VERSION_V2,
                 program_id: program_data.program_id.clone(),
-                amount: net,
+                amount: net_amount,
                 remaining_balance: program_data.remaining_balance,
             },
         );
@@ -1544,20 +1545,28 @@ impl ProgramEscrowContract {
     pub fn archive_program(env: Env, program_id: String) {
         Self::require_admin(&env);
         let program_key = DataKey::Program(program_id.clone());
-        let mut program_data: ProgramData = env.storage().instance().get(&program_key).expect("Program not found");
-        
+        let mut program_data: ProgramData = env
+            .storage()
+            .instance()
+            .get(&program_key)
+            .expect("Program not found");
+
         program_data.archived = true;
         program_data.archived_at = Some(env.ledger().timestamp());
-        
+
         env.storage().instance().set(&program_key, &program_data);
-        
+
         // Sync with global if applicable
-        if let Some(global_data) = env.storage().instance().get::<Symbol, ProgramData>(&PROGRAM_DATA) {
+        if let Some(global_data) = env
+            .storage()
+            .instance()
+            .get::<Symbol, ProgramData>(&PROGRAM_DATA)
+        {
             if global_data.program_id == program_id {
                 env.storage().instance().set(&PROGRAM_DATA, &program_data);
             }
         }
-        
+
         env.events().publish(
             (symbol_short!("Archived"),),
             (program_id, env.ledger().timestamp()),
@@ -1566,11 +1575,19 @@ impl ProgramEscrowContract {
 
     /// Get all archived program IDs.
     pub fn get_archived_programs(env: Env) -> Vec<String> {
-        let registry: Vec<String> = env.storage().instance().get(&PROGRAM_REGISTRY).unwrap_or(Vec::new(&env));
+        let registry: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&PROGRAM_REGISTRY)
+            .unwrap_or(Vec::new(&env));
         let mut archived = Vec::new(&env);
         for program_id in registry.iter() {
             let program_key = DataKey::Program(program_id.clone());
-            if let Some(data) = env.storage().instance().get::<DataKey, ProgramData>(&program_key) {
+            if let Some(data) = env
+                .storage()
+                .instance()
+                .get::<DataKey, ProgramData>(&program_key)
+            {
                 if data.archived {
                     archived.push_back(program_id);
                 }
@@ -2265,7 +2282,7 @@ impl ProgramEscrowContract {
 
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap().clone();
-            let gross = *amounts.get(i).unwrap();
+            let gross = amounts.get(i).unwrap();
 
             let pay_fee = Self::combined_fee_amount(
                 gross,
@@ -2720,7 +2737,11 @@ impl ProgramEscrowContract {
     }
 
     pub fn get_release_schedules(env: Env) -> Vec<ProgramReleaseSchedule> {
-        if let Some(info) = env.storage().instance().get::<Symbol, ProgramData>(&PROGRAM_DATA) {
+        if let Some(info) = env
+            .storage()
+            .instance()
+            .get::<Symbol, ProgramData>(&PROGRAM_DATA)
+        {
             if info.archived {
                 return Vec::new(&env);
             }
@@ -2756,7 +2777,11 @@ impl ProgramEscrowContract {
         }
 
         let program_key = DataKey::Program(program_id.clone());
-        let mut program_data: ProgramData = env.storage().instance().get(&program_key).unwrap_or_else(|| panic!("Program not found"));
+        let mut program_data: ProgramData = env
+            .storage()
+            .instance()
+            .get(&program_key)
+            .unwrap_or_else(|| panic!("Program not found"));
 
         let fee_config = Self::get_fee_config_internal(&env);
         let (fee_amount, net_amount) = if fee_config.fee_enabled && fee_config.lock_fee_rate > 0 {
@@ -2767,16 +2792,30 @@ impl ProgramEscrowContract {
 
         if fee_amount > 0 {
             let token_client = token::Client::new(&env, &program_data.token_address);
-            token_client.transfer(&env.current_contract_address(), &fee_config.fee_recipient, &fee_amount);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &fee_config.fee_recipient,
+                &fee_amount,
+            );
         }
 
-        program_data.total_funds = program_data.total_funds.checked_add(amount).expect("Total funds overflow");
-        program_data.remaining_balance = program_data.remaining_balance.checked_add(net_amount).expect("Remaining balance overflow");
+        program_data.total_funds = program_data
+            .total_funds
+            .checked_add(amount)
+            .expect("Total funds overflow");
+        program_data.remaining_balance = program_data
+            .remaining_balance
+            .checked_add(net_amount)
+            .expect("Remaining balance overflow");
 
         env.storage().instance().set(&program_key, &program_data);
 
         // Sync with global if applicable
-        if let Some(global_data) = env.storage().instance().get::<Symbol, ProgramData>(&PROGRAM_DATA) {
+        if let Some(global_data) = env
+            .storage()
+            .instance()
+            .get::<Symbol, ProgramData>(&PROGRAM_DATA)
+        {
             if global_data.program_id == program_id {
                 env.storage().instance().set(&PROGRAM_DATA, &program_data);
             }
@@ -2805,7 +2844,11 @@ impl ProgramEscrowContract {
         // so we just call the existing one but we should ideally update it too.
         // Actually, let's just implement it here to be safe.
         let program_key = DataKey::Program(program_id.clone());
-        let mut program_data: ProgramData = env.storage().instance().get(&program_key).unwrap_or_else(|| panic!("Program not found"));
+        let mut program_data: ProgramData = env
+            .storage()
+            .instance()
+            .get(&program_key)
+            .unwrap_or_else(|| panic!("Program not found"));
 
         if amount <= 0 || amount > program_data.remaining_balance {
             panic!("Invalid payout amount");
@@ -2817,16 +2860,18 @@ impl ProgramEscrowContract {
         program_data.remaining_balance -= amount;
         env.storage().instance().set(&program_key, &program_data);
 
-        if let Some(global_data) = env.storage().instance().get::<Symbol, ProgramData>(&PROGRAM_DATA) {
+        if let Some(global_data) = env
+            .storage()
+            .instance()
+            .get::<Symbol, ProgramData>(&PROGRAM_DATA)
+        {
             if global_data.program_id == program_id {
                 env.storage().instance().set(&PROGRAM_DATA, &program_data);
             }
         }
 
-        env.events().publish(
-            (symbol_short!("Payout"),),
-            (program_id, recipient, amount),
-        );
+        env.events()
+            .publish((symbol_short!("Payout"),), (program_id, recipient, amount));
 
         program_data
     }
@@ -3698,8 +3743,9 @@ impl ProgramEscrowContract {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_batch_operations;
 mod test_archival;
+#[cfg(test)]
+mod test_batch_operations;
 
 #[cfg(test)]
 mod test_pause;

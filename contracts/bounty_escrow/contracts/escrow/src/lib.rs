@@ -1288,6 +1288,10 @@ impl BountyEscrowContract {
         if fee_event.amount <= 0 {
             return;
         }
+        let fee_fixed = match operation_type {
+            events::FeeOperationType::Lock => config.lock_fixed_fee,
+            events::FeeOperationType::Release => config.release_fixed_fee,
+        };
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(env, &token_addr);
@@ -2635,15 +2639,12 @@ impl BountyEscrowContract {
         if fee_amount > 0 {
             Self::route_fee(
                 &env,
-                events::FeeCollected {
-                    operation_type: events::FeeOperationType::Lock,
-                    amount: fee_amount,
-                    fee_rate: lock_fee_rate,
-                    fee_fixed: lock_fixed_fee,
-                    recipient: fee_recipient,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
+                &client,
+                &fee_config,
+                fee_amount,
+                lock_fee_rate,
+                events::FeeOperationType::Lock,
+            )?;
         }
         soroban_sdk::log!(&env, "fee ok");
 
@@ -3101,6 +3102,11 @@ impl BountyEscrowContract {
             release_fixed_fee,
             fee_enabled,
         );
+        let mut fee_config = Self::get_fee_config_internal(&env);
+        fee_config.release_fee_rate = release_fee_rate;
+        fee_config.release_fixed_fee = release_fixed_fee;
+        fee_config.fee_recipient = fee_recipient.clone();
+        fee_config.fee_enabled = fee_enabled;
 
         // Net payout to contributor after release fee.
         let net_payout = escrow
@@ -3127,15 +3133,12 @@ impl BountyEscrowContract {
         if release_fee > 0 {
             Self::route_fee(
                 &env,
-                events::FeeCollected {
-                    operation_type: events::FeeOperationType::Release,
-                    amount: release_fee,
-                    fee_rate: release_fee_rate,
-                    fee_fixed: release_fixed_fee,
-                    recipient: fee_recipient,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
+                &client,
+                &fee_config,
+                release_fee,
+                release_fee_rate,
+                events::FeeOperationType::Release,
+            )?;
         }
 
         client.transfer(&env.current_contract_address(), &contributor, &net_payout);
