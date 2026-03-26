@@ -186,9 +186,8 @@ pub const RISK_FLAG_DEPRECATED: u32 = 1 << 3;
 pub const DELEGATE_PERMISSION_RELEASE: u32 = 1 << 0;
 pub const DELEGATE_PERMISSION_REFUND: u32 = 1 << 1;
 pub const DELEGATE_PERMISSION_UPDATE_META: u32 = 1 << 2;
-pub const DELEGATE_PERMISSION_MASK: u32 = DELEGATE_PERMISSION_RELEASE
-    | DELEGATE_PERMISSION_REFUND
-    | DELEGATE_PERMISSION_UPDATE_META;
+pub const DELEGATE_PERMISSION_MASK: u32 =
+    DELEGATE_PERMISSION_RELEASE | DELEGATE_PERMISSION_REFUND | DELEGATE_PERMISSION_UPDATE_META;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1158,7 +1157,7 @@ impl ProgramEscrowContract {
         }
 
         let mut program_data = Self::initialize_program(
-            env,
+            env.clone(),
             program_id,
             authorized_payout_key,
             token_address,
@@ -2551,7 +2550,7 @@ impl ProgramEscrowContract {
         )
     }
 
-    pub fn create_program_release_schedule_by(
+    pub fn create_release_schedule_by(
         env: Env,
         caller: Address,
         recipient: Address,
@@ -3318,7 +3317,7 @@ impl ProgramEscrowContract {
         Self::release_program_schedule_manual_internal(env, None, schedule_id)
     }
 
-    pub fn release_program_schedule_manual_by(env: Env, caller: Address, schedule_id: u64) {
+    pub fn release_schedule_manual_by(env: Env, caller: Address, schedule_id: u64) {
         Self::release_program_schedule_manual_internal(env, Some(caller), schedule_id)
     }
 
