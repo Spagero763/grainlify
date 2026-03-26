@@ -235,6 +235,7 @@ pub struct FeeCollected {
     pub operation_type: FeeOperationType, // determines if the fee was collected on lock or release.
     pub amount: i128,                     // actual fee amount transferred
     pub fee_rate: i128,                   // fee rate applied in basis points (1 bp = 0.01 %).
+    pub fee_fixed: i128,                  // flat fee component included in the calculation.
     pub recipient: Address,
     pub timestamp: u64, // Ledger timestamp.
 }
@@ -291,6 +292,10 @@ pub struct FeeConfigUpdated {
     pub lock_fee_rate: i128,
     /// New release fee rate in basis points.
     pub release_fee_rate: i128,
+    /// New fixed lock fee in token units.
+    pub lock_fixed_fee: i128,
+    /// New fixed release fee in token units.
+    pub release_fixed_fee: i128,
     /// Address designated to receive fees.
     pub fee_recipient: Address,
     /// Whether fee collection is active after this update.
@@ -303,6 +308,26 @@ pub struct FeeConfigUpdated {
 pub fn emit_fee_config_updated(env: &Env, event: FeeConfigUpdated) {
     let topics = (symbol_short!("fee_cfg"),);
     env.events().publish(topics, event.clone());
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EscrowArchived {
+    pub version: u32,
+    pub bounty_id: u64,
+    pub timestamp: u64,
+}
+
+pub fn emit_archived(env: &Env, bounty_id: u64, timestamp: u64) {
+    let topics = (symbol_short!("archive"), bounty_id);
+    env.events().publish(
+        topics,
+        EscrowArchived {
+            version: EVENT_VERSION_V2,
+            bounty_id,
+            timestamp,
+        },
+    );
 }
 
 /// Payload for the [`emit_fee_routing_updated`] event.

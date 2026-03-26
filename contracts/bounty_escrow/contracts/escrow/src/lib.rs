@@ -1291,6 +1291,10 @@ impl BountyEscrowContract {
         if fee_amount <= 0 {
             return Ok(());
         }
+        let fee_fixed = match operation_type {
+            events::FeeOperationType::Lock => config.lock_fixed_fee,
+            events::FeeOperationType::Release => config.release_fixed_fee,
+        };
 
         if !config.distribution_enabled || config.treasury_destinations.is_empty() {
             client.transfer(
@@ -1301,9 +1305,10 @@ impl BountyEscrowContract {
             events::emit_fee_collected(
                 env,
                 events::FeeCollected {
-                    operation_type,
+                    operation_type: operation_type.clone(),
                     amount: fee_amount,
                     fee_rate,
+                    fee_fixed,
                     recipient: config.fee_recipient.clone(),
                     timestamp: env.ledger().timestamp(),
                 },
@@ -1327,9 +1332,10 @@ impl BountyEscrowContract {
             events::emit_fee_collected(
                 env,
                 events::FeeCollected {
-                    operation_type,
+                    operation_type: operation_type.clone(),
                     amount: fee_amount,
                     fee_rate,
+                    fee_fixed,
                     recipient: config.fee_recipient.clone(),
                     timestamp: env.ledger().timestamp(),
                 },
@@ -1369,6 +1375,7 @@ impl BountyEscrowContract {
                     operation_type: operation_type.clone(),
                     amount: share,
                     fee_rate,
+                    fee_fixed,
                     recipient: destination.address,
                     timestamp: env.ledger().timestamp(),
                 },
@@ -2452,6 +2459,11 @@ impl BountyEscrowContract {
         // Deduct lock fee from the escrowed principal (percentage + fixed, capped at deposit).
         let fee_amount =
             Self::combined_fee_amount(amount, lock_fee_rate, lock_fixed_fee, fee_enabled);
+        let mut fee_config = Self::get_fee_config_internal(&env);
+        fee_config.lock_fee_rate = lock_fee_rate;
+        fee_config.lock_fixed_fee = lock_fixed_fee;
+        fee_config.fee_recipient = fee_recipient.clone();
+        fee_config.fee_enabled = fee_enabled;
 
         // Net amount stored in escrow after fee.
         // Fee must never exceed the deposit; guard against misconfiguration.
@@ -2465,15 +2477,12 @@ impl BountyEscrowContract {
         if fee_amount > 0 {
             Self::route_fee(
                 &env,
-                events::FeeCollected {
-                    operation_type: events::FeeOperationType::Lock,
-                    amount: fee_amount,
-                    fee_rate: lock_fee_rate,
-                    fee_fixed: lock_fixed_fee,
-                    recipient: fee_recipient,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
+                &client,
+                &fee_config,
+                fee_amount,
+                lock_fee_rate,
+                events::FeeOperationType::Lock,
+            )?;
         }
         soroban_sdk::log!(&env, "fee ok");
 
@@ -2567,14 +2576,14 @@ impl BountyEscrowContract {
     /// This function performs only read operations. No storage writes, token transfers,
     /// or events are emitted.
     pub fn archive_escrow(env: Env, bounty_id: u64) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
+        let admin = rbac::require_admin(&env);
         admin.require_auth();
 
         let mut escrow = env
             .storage()
             .persistent()
             .get::<DataKey, Escrow>(&DataKey::Escrow(bounty_id))
-            .ok_or(Error::EscrowNotFound)?;
+            .ok_or(Error::BountyNotFound)?;
 
         escrow.archived = true;
         escrow.archived_at = Some(env.ledger().timestamp());
@@ -2928,6 +2937,11 @@ impl BountyEscrowContract {
             release_fixed_fee,
             fee_enabled,
         );
+        let mut fee_config = Self::get_fee_config_internal(&env);
+        fee_config.release_fee_rate = release_fee_rate;
+        fee_config.release_fixed_fee = release_fixed_fee;
+        fee_config.fee_recipient = fee_recipient.clone();
+        fee_config.fee_enabled = fee_enabled;
 
         // Net payout to contributor after release fee.
         let net_payout = escrow
@@ -2954,15 +2968,12 @@ impl BountyEscrowContract {
         if release_fee > 0 {
             Self::route_fee(
                 &env,
-                events::FeeCollected {
-                    operation_type: events::FeeOperationType::Release,
-                    amount: release_fee,
-                    fee_rate: release_fee_rate,
-                    fee_fixed: release_fixed_fee,
-                    recipient: fee_recipient,
-                    timestamp: env.ledger().timestamp(),
-                },
-            );
+                &client,
+                &fee_config,
+                release_fee,
+                release_fee_rate,
+                events::FeeOperationType::Release,
+            )?;
         }
 
         client.transfer(&env.current_contract_address(), &contributor, &net_payout);
@@ -3575,7 +3586,7 @@ impl BountyEscrowContract {
             FundsReleased {
                 version: EVENT_VERSION_V2,
                 bounty_id,
-                amount: net_to_contributor,
+                amount: payout_amount,
                 recipient: contributor,
                 timestamp: env.ledger().timestamp(),
             },
@@ -5775,6 +5786,8 @@ impl traits::FeeInterface for BountyEscrowContract {
     ) -> Result<(), crate::Error> {
         let entrypoint: fn(
             Env,
+            Option<i128>,
+            Option<i128>,
             Option<i128>,
             Option<i128>,
             Option<Address>,
