@@ -1113,7 +1113,8 @@ impl BountyEscrowContract {
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::Version, &1u32);
+        // Version 2 reflects the breaking shared-trait interface alignment.
+        env.storage().instance().set(&DataKey::Version, &2u32);
 
         events::emit_bounty_initialized(
             &env,
