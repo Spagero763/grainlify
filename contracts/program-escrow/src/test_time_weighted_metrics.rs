@@ -78,6 +78,7 @@ fn test_time_weighted_metrics_evolution_over_activity() {
     let (client, _admin, _token_id) = setup(&env, 50_000);
     let r1 = Address::generate(&env);
     let r2 = Address::generate(&env);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3600);
     client.single_payout(&r1, &10_000);
     client.single_payout(&r2, &15_000);
     let m = client.get_time_weighted_metrics();

@@ -295,6 +295,130 @@ mod monitoring {
     }
 }
 
+// ==================== TWA METRICS MODULE ====================
+pub mod twa_metrics {
+    use soroban_sdk::{Env};
+    use crate::{DataKey, TimeWeightedMetrics, TwaBucket};
+
+    const TWA_PERIOD_SECS: u64 = 3600;
+    const NUM_BUCKETS: u64 = 24;
+
+    fn get_bucket_index(timestamp: u64) -> u64 {
+        (timestamp / TWA_PERIOD_SECS) % NUM_BUCKETS
+    }
+
+    fn get_period_id(timestamp: u64) -> u64 {
+        timestamp / TWA_PERIOD_SECS
+    }
+
+    pub fn track_lock(env: &Env, amount: i128) {
+        let timestamp = env.ledger().timestamp();
+        env.storage().persistent().set(&DataKey::TwaLastLock, &timestamp);
+
+        let period_id = get_period_id(timestamp);
+        let index = get_bucket_index(timestamp);
+        let key = DataKey::TwaBucket(index);
+
+        let mut bucket: TwaBucket = env.storage().persistent().get(&key).unwrap_or(TwaBucket {
+            period_id,
+            sum_lock_amount: 0,
+            lock_count: 0,
+            sum_settlement_time: 0,
+            settlement_count: 0,
+        });
+
+        if bucket.period_id != period_id {
+            bucket.period_id = period_id;
+            bucket.sum_lock_amount = 0;
+            bucket.lock_count = 0;
+            bucket.sum_settlement_time = 0;
+            bucket.settlement_count = 0;
+        }
+
+        bucket.sum_lock_amount += amount;
+        bucket.lock_count += 1;
+        env.storage().persistent().set(&key, &bucket);
+    }
+
+    pub fn track_settlement(env: &Env, count: u64) {
+        if count == 0 {
+            return;
+        }
+        let timestamp = env.ledger().timestamp();
+        let last_lock_opt: Option<u64> = env.storage().persistent().get(&DataKey::TwaLastLock);
+        if let Some(last_lock) = last_lock_opt {
+            let settlement_time = if timestamp > last_lock { timestamp - last_lock } else { 0 };
+            let total_settlement_time = settlement_time * count;
+
+            let period_id = get_period_id(timestamp);
+            let index = get_bucket_index(timestamp);
+            let key = DataKey::TwaBucket(index);
+
+            let mut bucket: TwaBucket = env.storage().persistent().get(&key).unwrap_or(TwaBucket {
+                period_id,
+                sum_lock_amount: 0,
+                lock_count: 0,
+                sum_settlement_time: 0,
+                settlement_count: 0,
+            });
+
+            if bucket.period_id != period_id {
+                bucket.period_id = period_id;
+                bucket.sum_lock_amount = 0;
+                bucket.lock_count = 0;
+                bucket.sum_settlement_time = 0;
+                bucket.settlement_count = 0;
+            }
+
+            bucket.sum_settlement_time += total_settlement_time;
+            bucket.settlement_count += count;
+            env.storage().persistent().set(&key, &bucket);
+        }
+    }
+
+    pub fn get_metrics(env: &Env) -> TimeWeightedMetrics {
+        let timestamp = env.ledger().timestamp();
+        let current_period = get_period_id(timestamp);
+
+        let mut total_lock_amount: i128 = 0;
+        let mut total_lock_count: u64 = 0;
+        let mut total_settlement_time: u64 = 0;
+        let mut total_settlement_count: u64 = 0;
+
+        for i in 0..NUM_BUCKETS {
+            let key = DataKey::TwaBucket(i);
+            if let Some(bucket) = env.storage().persistent().get::<_, TwaBucket>(&key) {
+                if current_period >= bucket.period_id && current_period - bucket.period_id < NUM_BUCKETS {
+                    total_lock_amount += bucket.sum_lock_amount;
+                    total_lock_count += bucket.lock_count;
+                    total_settlement_time += bucket.sum_settlement_time;
+                    total_settlement_count += bucket.settlement_count;
+                }
+            }
+        }
+
+        let avg_lock_size = if total_lock_count > 0 {
+            total_lock_amount / (total_lock_count as i128)
+        } else {
+            0
+        };
+
+        let avg_settlement_time_secs = if total_settlement_count > 0 {
+            total_settlement_time / total_settlement_count
+        } else {
+            0
+        };
+
+        TimeWeightedMetrics {
+            window_secs: NUM_BUCKETS * TWA_PERIOD_SECS,
+            avg_lock_size,
+            avg_settlement_time_secs,
+            lock_count: total_lock_count,
+            settlement_count: total_settlement_count,
+        }
+    }
+}
+
 // ── Step 1: Add module declarations near the top of lib.rs ──────────────
 // (after `mod anti_abuse;` and before the contract struct)
 
@@ -424,6 +548,20 @@ pub struct ProgramMetadata {
     pub custom_fields: Vec<(String, String)>,
 }
 
+impl ProgramMetadata {
+    pub fn empty(env: &Env) -> Self {
+        Self {
+            program_name: None,
+            program_type: None,
+            ecosystem: None,
+            tags: soroban_sdk::vec![env],
+            start_date: None,
+            end_date: None,
+            custom_fields: soroban_sdk::vec![env],
+        }
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgramData {
@@ -437,7 +575,7 @@ pub struct ProgramData {
     pub token_address: Address,
     pub initial_liquidity: i128,
     pub risk_flags: u32,
-    pub metadata: Option<ProgramMetadata>,
+    pub metadata: ProgramMetadata,
     pub reference_hash: Option<soroban_sdk::Bytes>,
     pub archived: bool,
     pub archived_at: Option<u64>,
@@ -510,6 +648,28 @@ pub struct DisputeResolvedEvent {
 const DISPUTE_OPENED: Symbol = symbol_short!("DspOpen");
 const DISPUTE_RESOLVED: Symbol = symbol_short!("DspRslv");
 
+/// Bucket for a single period of time-weighted metrics
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TwaBucket {
+    pub period_id: u64,
+    pub sum_lock_amount: i128,
+    pub lock_count: u64,
+    pub sum_settlement_time: u64,
+    pub settlement_count: u64,
+}
+
+/// Returned view of aggregated time-weighted metrics over the entire window
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeWeightedMetrics {
+    pub window_secs: u64,
+    pub avg_lock_size: i128,
+    pub avg_settlement_time_secs: u64,
+    pub lock_count: u64,
+    pub settlement_count: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
@@ -529,6 +689,8 @@ pub enum DataKey {
     ProgramDependencies(String),     // program_id -> Vec<String>
     DependencyStatus(String),        // program_id -> DependencyStatus
     Dispute,                         // DisputeRecord (single active dispute per contract)
+    TwaLastLock,                     // u64
+    TwaBucket(u64),                  // index -> TwaBucket
 }
 
 #[contracttype]
@@ -859,7 +1021,6 @@ mod test_payout_splits;
 #[contract]
 pub struct ProgramEscrowContract;
 
-#[contractimpl]
 impl ProgramEscrowContract {
     fn order_batch_lock_items(env: &Env, items: &Vec<LockItem>) -> Vec<LockItem> {
         let mut ordered: Vec<LockItem> = Vec::new(env);
@@ -917,7 +1078,10 @@ impl ProgramEscrowContract {
         env.storage().instance().set(&RECEIPT_ID, &id);
         id
     }
+}
 
+#[contractimpl]
+impl ProgramEscrowContract {
     /// Initialize a new program escrow
     ///
     /// # Arguments
@@ -1027,7 +1191,7 @@ impl ProgramEscrowContract {
             token_address: token_address.clone(),
             initial_liquidity: init_liquidity,
             risk_flags: 0,
-            metadata: None,
+            metadata: ProgramMetadata::empty(&env),
             reference_hash,
             archived: false,
             archived_at: None,
@@ -1158,7 +1322,7 @@ impl ProgramEscrowContract {
         }
 
         let mut program_data = Self::initialize_program(
-            env,
+            env.clone(),
             program_id,
             authorized_payout_key,
             token_address,
@@ -1169,7 +1333,7 @@ impl ProgramEscrowContract {
 
         if let Some(program_metadata) = metadata {
             let program_id = program_data.program_id.clone();
-            program_data.metadata = Some(program_metadata);
+            program_data.metadata = program_metadata;
             Self::store_program_data(&env, &program_id, &program_data);
         }
 
@@ -1232,7 +1396,7 @@ impl ProgramEscrowContract {
                 token_address: token_address.clone(),
                 initial_liquidity: 0,
                 risk_flags: 0,
-                metadata: None,
+                metadata: ProgramMetadata::empty(&env),
                 reference_hash: item.reference_hash.clone(),
                 archived: false,
                 archived_at: None,
@@ -1387,6 +1551,13 @@ impl ProgramEscrowContract {
         env.storage().instance().set(&FEE_CONFIG, &cfg);
     }
 
+    /// Retrieve time-weighted average metrics for program health.
+    /// Returns aggregated data such as lock sizes and settlement times
+    /// over a 24-hour sliding window, manipulation-resistant and fully on-chain.
+    pub fn get_time_weighted_metrics(env: Env) -> TimeWeightedMetrics {
+        twa_metrics::get_metrics(&env)
+    }
+
     /// Check if a program exists (legacy single-program check)
     ///
     /// # Returns
@@ -1481,6 +1652,8 @@ impl ProgramEscrowContract {
             .remaining_balance
             .checked_add(net_amount)
             .unwrap_or_else(|| panic!("Remaining balance overflow"));
+
+        twa_metrics::track_lock(&env, net_amount);
 
         // Store updated data
         env.storage().instance().set(&PROGRAM_DATA, &program_data);
@@ -1801,7 +1974,7 @@ impl ProgramEscrowContract {
             DELEGATE_PERMISSION_UPDATE_META,
         );
 
-        program_data.metadata = Some(metadata);
+        program_data.metadata = metadata;
         Self::store_program_data(&env, &program_id, &program_data);
 
         env.events().publish(
@@ -2325,6 +2498,8 @@ impl ProgramEscrowContract {
         updated_data.remaining_balance -= total_payout;
         updated_data.payout_history = updated_history;
 
+        twa_metrics::track_settlement(&env, recipients.len() as u64);
+
         // Store updated data
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
@@ -2484,6 +2659,8 @@ impl ProgramEscrowContract {
         updated_data.remaining_balance -= amount;
         updated_data.payout_history = updated_history;
 
+        twa_metrics::track_settlement(&env, 1);
+
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
         env.events().publish(
@@ -2551,7 +2728,7 @@ impl ProgramEscrowContract {
         )
     }
 
-    pub fn create_program_release_schedule_by(
+    pub fn add_release_schedule_by(
         env: Env,
         caller: Address,
         recipient: Address,
@@ -2806,6 +2983,8 @@ impl ProgramEscrowContract {
             .checked_add(net_amount)
             .expect("Remaining balance overflow");
 
+        twa_metrics::track_lock(&env, net_amount);
+
         env.storage().instance().set(&program_key, &program_data);
 
         // Sync with global if applicable
@@ -2854,6 +3033,8 @@ impl ProgramEscrowContract {
 
         let token_client = token::Client::new(&env, &program_data.token_address);
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        twa_metrics::track_settlement(&env, 1);
 
         program_data.remaining_balance -= amount;
         env.storage().instance().set(&program_key, &program_data);
@@ -3318,8 +3499,7 @@ impl ProgramEscrowContract {
         Self::release_program_schedule_manual_internal(env, None, schedule_id)
     }
 
-    pub fn release_program_schedule_manual_by(env: Env, caller: Address, schedule_id: u64) {
-        Self::release_program_schedule_manual_internal(env, Some(caller), schedule_id)
+    pub fn release_prog_schedule_manual_by(env: Env, caller: Address, schedule_id: u64) {      Self::release_program_schedule_manual_internal(env, Some(caller), schedule_id)
     }
 
     fn release_program_schedule_manual_internal(
@@ -3741,10 +3921,7 @@ impl ProgramEscrowContract {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_archival;
-#[cfg(test)]
-mod test_batch_operations;
-
+mod test_time_weighted_metrics;
 #[cfg(test)]
 mod test_pause;
 

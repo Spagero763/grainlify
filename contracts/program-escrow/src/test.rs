@@ -774,7 +774,7 @@ fn test_batch_initialize_programs_empty_err() {
     let client = ProgramEscrowContractClient::new(&env, &contract_id);
     let items: Vec<ProgramInitItem> = Vec::new(&env);
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSize))));
+    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSizeProgram))));
 }
 
 #[test]
@@ -894,7 +894,7 @@ fn test_batch_register_exceeds_max_batch_size() {
     }
 
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSize))));
+    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSizeProgram))));
 }
 
 #[test]
