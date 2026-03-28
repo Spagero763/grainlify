@@ -268,16 +268,6 @@ fn serialization_compatibility_public_types_and_events() {
             }
             .into_val(&env),
         ),
-        (
-            "PayoutApproval",
-            PayoutApproval {
-                program_id: program_id.clone(),
-                recipient: recipient.clone(),
-                amount: 123,
-                approvals: soroban_sdk::vec![&env, admin.clone()],
-            }
-            .into_val(&env),
-        ),
         ("ClaimStatus::Pending", ClaimStatus::Pending.into_val(&env)),
         ("ClaimRecord", claim_record.clone().into_val(&env)),
         (

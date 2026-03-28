@@ -177,6 +177,7 @@ pub const RISK_FLAG_HIGH_RISK: u32 = 1 << 0;
 pub const RISK_FLAG_UNDER_REVIEW: u32 = 1 << 1;
 pub const RISK_FLAG_RESTRICTED: u32 = 1 << 2;
 pub const RISK_FLAG_DEPRECATED: u32 = 1 << 3;
+pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -635,6 +636,8 @@ mod test_risk_flags;
 #[cfg(test)]
 #[cfg(test)]
 mod test_serialization_compatibility;
+#[cfg(test)]
+mod test_storage_layout;
 
 // ========================================================================
 // Contract Implementation
@@ -648,6 +651,16 @@ mod test_serialization_compatibility;
 
 #[contract]
 pub struct ProgramEscrowContract;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageLayoutVerification {
+    pub schema_version: u32,
+    pub admin_set: bool,
+    pub pause_flags_set: bool,
+    pub maintenance_mode_set: bool,
+    pub read_only_mode_set: bool,
+}
 
 #[contractimpl]
 impl ProgramEscrowContract {
@@ -1291,6 +1304,21 @@ impl ProgramEscrowContract {
                 timestamp: env.ledger().timestamp(),
             },
         );
+    }
+
+    /// Verifies that the instance storage aligns with the documented layout.
+    pub fn verify_storage_layout(env: Env) -> StorageLayoutVerification {
+        StorageLayoutVerification {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            admin_set: env.storage().instance().has(&DataKey::Admin)
+                && env.storage().instance().get::<_, Address>(&DataKey::Admin).is_some(),
+            pause_flags_set: env.storage().instance().has(&DataKey::PauseFlags)
+                && env.storage().instance().get::<_, PauseFlags>(&DataKey::PauseFlags).is_some(),
+            maintenance_mode_set: env.storage().instance().has(&DataKey::MaintenanceMode)
+                && env.storage().instance().get::<_, bool>(&DataKey::MaintenanceMode).is_some(),
+            read_only_mode_set: env.storage().instance().has(&DataKey::ReadOnlyMode)
+                && env.storage().instance().get::<_, bool>(&DataKey::ReadOnlyMode).is_some(),
+        }
     }
 
     /// Returns true if the contract is in read-only mode.

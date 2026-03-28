@@ -457,6 +457,8 @@ mod monitoring {
 mod test_core_monitoring;
 #[cfg(test)]
 mod test_serialization_compatibility;
+#[cfg(test)]
+mod test_storage_layout;
 
 // ==================== END MONITORING MODULE ====================
 
@@ -542,6 +544,7 @@ enum DataKey {
 /// Set during initialization and can be updated via `set_version()`.
 #[cfg(feature = "contract")]
 const VERSION: u32 = 2;
+pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 const CONFIG_SNAPSHOT_LIMIT: u32 = 20;
 
 #[contracttype]
@@ -1042,6 +1045,23 @@ impl GrainlifyContract {
         // Track performance
         let duration = env.ledger().timestamp().saturating_sub(start);
         monitoring::emit_performance(&env, symbol_short!("set_ver"), duration);
+    }
+
+    /// Verifies that the instance storage aligns with the documented layout.
+    pub fn verify_storage_layout(env: Env) -> bool {
+        let admin_ok = env.storage().instance().has(&DataKey::Admin)
+            && env.storage().instance().get::<_, Address>(&DataKey::Admin).is_some();
+
+        let version_ok = env.storage().instance().has(&DataKey::Version)
+            && env.storage().instance().get::<_, u32>(&DataKey::Version).is_some();
+
+        let migration_ok = if env.storage().instance().has(&DataKey::MigrationState) {
+            env.storage().instance().get::<_, crate::MigrationState>(&DataKey::MigrationState).is_some()
+        } else {
+            true
+        };
+
+        admin_ok && version_ok && migration_ok
     }
 
     /// Returns true if the contract is in read-only mode.

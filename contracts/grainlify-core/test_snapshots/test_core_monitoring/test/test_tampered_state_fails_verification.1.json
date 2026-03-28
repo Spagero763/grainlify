@@ -208,24 +208,24 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Version"
+                              "symbol": "ReadOnlyMode"
                             }
                           ]
                         },
                         "val": {
-                          "u32": 2
+                          "bool": false
                         }
                       },
                       {
                         "key": {
                           "vec": [
                             {
-                              "symbol": "ReceiptCounter"
+                              "symbol": "Version"
                             }
                           ]
                         },
                         "val": {
-                          "u64": 1
+                          "u32": 2
                         }
                       }
                     ]
@@ -363,61 +363,22 @@
               "map": [
                 {
                   "key": {
-<<<<<<< HEAD:contracts/program-escrow/test_snapshots/test_pause/test_set_paused_release.1.json
-                    "symbol": "admin"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-=======
                     "symbol": "duration"
                   },
                   "val": {
                     "u64": 0
->>>>>>> origin/master:contracts/grainlify-core/test_snapshots/test_core_monitoring/test/test_tampered_state_fails_verification.1.json
                   }
                 },
                 {
                   "key": {
-<<<<<<< HEAD:contracts/program-escrow/test_snapshots/test_pause/test_set_paused_release.1.json
-                    "symbol": "operation"
-                  },
-                  "val": {
-                    "symbol": "release"
-=======
                     "symbol": "function"
                   },
                   "val": {
                     "symbol": "init"
->>>>>>> origin/master:contracts/grainlify-core/test_snapshots/test_core_monitoring/test/test_tampered_state_fails_verification.1.json
                   }
                 },
                 {
                   "key": {
-<<<<<<< HEAD:contracts/program-escrow/test_snapshots/test_pause/test_set_paused_release.1.json
-                    "symbol": "paused"
-                  },
-                  "val": {
-                    "bool": true
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "reason"
-                  },
-                  "val": "void"
-                },
-                {
-                  "key": {
-                    "symbol": "receipt_id"
-                  },
-                  "val": {
-                    "u64": 1
-                  }
-                },
-                {
-                  "key": {
-=======
->>>>>>> origin/master:contracts/grainlify-core/test_snapshots/test_core_monitoring/test/test_tampered_state_fails_verification.1.json
                     "symbol": "timestamp"
                   },
                   "val": {
