@@ -758,6 +758,11 @@ pub enum BatchError {
 
 pub const MAX_BATCH_SIZE: u32 = 100;
 
+// Constants for program scheduling
+const BASE_FEE: i128 = 100;
+const MIN_INCREMENT: u64 = 86400; // 1 day in seconds
+const MAX_SLOTS: usize = 1000;
+
 fn vec_contains(values: &Vec<String>, target: &String) -> bool {
     for value in values.iter() {
         if value == *target {
