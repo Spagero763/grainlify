@@ -416,6 +416,24 @@ pub struct ProgramMetadataUpdatedEvent {
 
 // Metadata structs moved to metadata.rs
 
+/// The lifecycle state of a program escrow.
+///
+/// Transitions:
+/// ```text
+/// Draft ──publish_program()──► Active
+/// ```
+///
+/// Programs are created in `Draft` state to allow preparation and review
+/// before becoming active and allowing fund locks and payouts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProgramStatus {
+    /// Initial state: program is being prepared, no locks or payouts allowed
+    Draft,
+    /// Active state: program is live, locks and payouts are allowed
+    Active,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProgramData {
@@ -433,6 +451,7 @@ pub struct ProgramData {
     pub reference_hash: Option<soroban_sdk::Bytes>,
     pub archived: bool,
     pub archived_at: Option<u64>,
+    pub status: ProgramStatus,
 }
 
 // ========================================================================
@@ -731,6 +750,11 @@ pub enum BatchError {
 
 pub const MAX_BATCH_SIZE: u32 = 100;
 
+// Constants for program scheduling
+const BASE_FEE: i128 = 100;
+const MIN_INCREMENT: u64 = 86400; // 1 day in seconds
+const MAX_SLOTS: usize = 1000;
+
 fn vec_contains(values: &Vec<String>, target: &String) -> bool {
     for value in values.iter() {
         if value == *target {
@@ -1017,6 +1041,7 @@ impl ProgramEscrowContract {
             reference_hash,
             archived: false,
             archived_at: None,
+            status: ProgramStatus::Draft,
         };
 
         // Store program data in registry
@@ -1362,6 +1387,7 @@ impl ProgramEscrowContract {
                 reference_hash: item.reference_hash.clone(),
                 archived: false,
                 archived_at: None,
+                status: ProgramStatus::Draft,
             };
             let program_key = DataKey::Program(program_id.clone());
             env.storage().instance().set(&program_key, &program_data);
@@ -1558,15 +1584,22 @@ impl ProgramEscrowContract {
     fn lock_program_funds_internal(env: Env, amount: i128, from: Option<Address>) -> ProgramData {
         // Validation precedence (deterministic ordering):
         // 1. Contract initialized
-        // 2. Paused (operational state)
-        // 3. Input validation (amount)
+        // 2. Program must be in Active status (not Draft)
+        // 3. Paused (operational state)
+        // 4. Input validation (amount)
 
         // 1. Contract must be initialized
         if !env.storage().instance().has(&PROGRAM_DATA) {
             panic!("Program not initialized");
         }
 
-        // 2. Operational state: paused
+        // 2. Program must be published (not in Draft)
+        let program_data: ProgramData = env.storage().instance().get(&PROGRAM_DATA).unwrap();
+        if program_data.status == ProgramStatus::Draft {
+            panic!("Program is in Draft status. Publish the program first.");
+        }
+
+        // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("lock")) {
             panic!("Funds Paused");
         }
@@ -1677,7 +1710,7 @@ impl ProgramEscrowContract {
     }
 
     /// Returns the current admin address, if set.
-    pub fn get_admin(env: Env) -> Option<Address> {
+    pub fn get_program_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
 
@@ -2312,7 +2345,7 @@ impl ProgramEscrowContract {
             })
     }
 
-    pub fn get_analytics(_env: Env) -> Analytics {
+    pub fn get_program_analytics(_env: Env) -> Analytics {
         Analytics {
             total_locked: 0,
             total_released: 0,

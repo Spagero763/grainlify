@@ -166,6 +166,51 @@ pub fn emit_funds_released(env: &Env, event: FundsReleased) {
     env.events().publish(topics, event.clone());
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ESCROW PUBLISHED EVENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Payload for the [`emit_escrow_published`] event.
+///
+/// Emitted when an escrow transitions from `Draft` to `Locked` status via
+/// the `publish()` function. This indicates the escrow is now active and
+/// funds can be released or refunded.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"pub"` |
+/// | 1 | `bounty_id` |
+///
+/// ### Data fields
+/// | Field | Type | Description |
+/// |-------|------|-------------|
+/// | `version` | `u32` | Always [`EVENT_VERSION_V2`] |
+/// | `bounty_id` | `u64` | The bounty identifier |
+/// | `published_by` | `Address` | Address that published the escrow |
+/// | `timestamp` | `u64` | Ledger time of publication |
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EscrowPublished {
+    pub version: u32,
+    pub bounty_id: u64,
+    pub published_by: Address,
+    pub timestamp: u64,
+}
+
+/// Emit [`EscrowPublished`].
+///
+/// # Arguments
+/// * `env`   — Soroban execution environment.
+/// * `event` — Pre-constructed event payload.
+///
+/// # Panics
+/// Never panics; publishing is infallible in Soroban.
+pub fn emit_escrow_published(env: &Env, event: EscrowPublished) {
+    let topics = (symbol_short!("pub"), event.bounty_id);
+    env.events().publish(topics, event.clone());
+}
+
 // ── Refund trigger type ───────────────────────────────────────────────────────
 
 /// Discriminator indicating which code path triggered a refund.
@@ -885,7 +930,7 @@ pub fn emit_pause_state_changed(env: &Env, event: crate::PauseStateChanged) {
 /// | 0 | `"em_wtd"` |
 ///
 /// ### Security notes
-/// - This function can only be called when `lock_paused = true`,
+/// Returns `Error::UpgradeSafetyFailed` when blocking safety findings = true`,
 ///   ensuring depositors have visible warning before a drain is possible.
 /// - The `amount` field reflects the **entire** contract balance at the
 ///   time of withdrawal, which may cover multiple open escrows.
