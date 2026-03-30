@@ -281,6 +281,18 @@
                         "val": {
                           "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1003,7 +1015,7 @@
             ],
             "data": {
               "error": {
-                "contract": 30
+                "contract": 34
               }
             }
           }
@@ -1024,7 +1036,7 @@
               },
               {
                 "error": {
-                  "contract": 30
+                  "contract": 34
                 }
               }
             ],
@@ -1049,7 +1061,7 @@
               },
               {
                 "error": {
-                  "contract": 30
+                  "contract": 34
                 }
               }
             ],
@@ -1128,7 +1140,7 @@
               },
               {
                 "error": {
-                  "contract": 30
+                  "contract": 34
                 }
               }
             ],

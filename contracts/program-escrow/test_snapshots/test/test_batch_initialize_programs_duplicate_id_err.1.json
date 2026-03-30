@@ -104,20 +104,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "creator"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "initial_liquidity"
-                      },
-                      "val": "void"
-                    },
-                    {
-                      "key": {
                         "symbol": "program_id"
                       },
                       "val": {
@@ -149,20 +135,6 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                       }
-                    },
-                    {
-                      "key": {
-                        "symbol": "creator"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "initial_liquidity"
-                      },
-                      "val": "void"
                     },
                     {
                       "key": {
@@ -212,7 +184,7 @@
             ],
             "data": {
               "error": {
-                "contract": 3
+                "contract": 402
               }
             }
           }
@@ -233,7 +205,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 402
                 }
               }
             ],
@@ -258,7 +230,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 402
                 }
               }
             ],
@@ -283,20 +255,6 @@
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
-                            },
-                            {
-                              "key": {
-                                "symbol": "creator"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "initial_liquidity"
-                              },
-                              "val": "void"
                             },
                             {
                               "key": {
@@ -331,20 +289,6 @@
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                               }
-                            },
-                            {
-                              "key": {
-                                "symbol": "creator"
-                              },
-                              "val": {
-                                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                              }
-                            },
-                            {
-                              "key": {
-                                "symbol": "initial_liquidity"
-                              },
-                              "val": "void"
                             },
                             {
                               "key": {

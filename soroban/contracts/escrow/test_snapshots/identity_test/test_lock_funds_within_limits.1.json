@@ -83,6 +83,9 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
+                  "bytes": "013ffb8695c90bbf77a705f1e939097b5ddbf3081dbd19e755fbc15929217847"
+                },
+                {
                   "bool": true
                 }
               ]
@@ -250,7 +253,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "bool": true
+                  "bytes": "013ffb8695c90bbf77a705f1e939097b5ddbf3081dbd19e755fbc15929217847"
                 }
               }
             },
@@ -318,18 +321,6 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "jurisdiction"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "None"
-                          }
-                        ]
                       }
                     },
                     {

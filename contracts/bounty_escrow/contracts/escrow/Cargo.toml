@@ -8,6 +8,12 @@ publish = false
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+[features]
+default = []
+metadata_tagging = []
+legacy-tests = []
+testutils = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
 grainlify-core = { path = "../../../grainlify-core", default-features = false }

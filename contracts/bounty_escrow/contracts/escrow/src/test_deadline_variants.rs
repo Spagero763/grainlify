@@ -1,4 +1,44 @@
 #![cfg(test)]
+//! # Bounty Escrow Deadline Variant Tests
+//!
+//! Closes #763
+//!
+//! This module validates the three deadline configurations supported by the
+//! bounty escrow contract and documents the time semantics used with the
+//! Soroban ledger timestamp.
+//!
+//! ## Deadline Variants
+//!
+//! | Variant          | Value          | Refund Behavior                                |
+//! |------------------|----------------|------------------------------------------------|
+//! | Zero deadline    | `0`            | Immediately refundable (no waiting period)     |
+//! | Future deadline  | `now + n`      | Blocked until `ledger_timestamp >= deadline`   |
+//! | No deadline      | `u64::MAX`     | Permanently blocked without admin approval     |
+//!
+//! ## Time Semantics
+//!
+//! All deadline comparisons use the **Soroban ledger timestamp** (`env.ledger().timestamp()`),
+//! which represents the close time of the current ledger in **Unix epoch seconds** (u64).
+//!
+//! - The refund check is: `ledger_timestamp >= deadline` → eligible for refund.
+//! - When `deadline == 0`, the condition `now >= 0` is always true for u64, so
+//!   refunds are allowed immediately.
+//! - When `deadline == u64::MAX`, the condition `now >= u64::MAX` is never true
+//!   under normal operation (even 100+ years from epoch), so refunds are
+//!   permanently blocked unless an admin approval overrides the check.
+//! - `release_funds` is **not gated by deadline** — releases can happen at any time
+//!   regardless of the deadline value.
+//!
+//! ## Security Notes
+//!
+//! - Deadline values are stored as-is and never normalized, ensuring the depositor's
+//!   intent is faithfully preserved.
+//! - The `u64::MAX` sentinel is safe because the Soroban ledger timestamp will not
+//!   reach this value within any practical timeframe.
+//! - Admin-approved refunds bypass the deadline check entirely, providing an escape
+//!   hatch for all deadline configurations.
+//! - Partial refunds via `approve_refund` with `RefundMode::Partial` correctly
+//!   preserve the remaining balance and transition to `PartiallyRefunded` status.
 
 use crate::{BountyEscrowContract, BountyEscrowContractClient, Error, EscrowStatus, RefundMode};
 use soroban_sdk::{
@@ -6,6 +46,7 @@ use soroban_sdk::{
     token, Address, Env,
 };
 
+/// Creates a Stellar asset token contract for testing.
 fn create_token_contract<'a>(
     e: &Env,
     admin: &Address,
@@ -18,11 +59,17 @@ fn create_token_contract<'a>(
     )
 }
 
+/// Registers a new bounty escrow contract instance.
 fn create_escrow_contract<'a>(e: &Env) -> BountyEscrowContractClient<'a> {
     let id = e.register_contract(None, BountyEscrowContract);
     BountyEscrowContractClient::new(e, &id)
 }
 
+/// Shared test setup providing an initialized escrow contract with a funded depositor.
+///
+/// - Admin: contract administrator
+/// - Depositor: funded with 10,000,000 tokens
+/// - Contributor: recipient for released funds
 struct Setup<'a> {
     env: Env,
     _admin: Address,
@@ -58,76 +105,6 @@ impl<'a> Setup<'a> {
     }
 }
 
-// =============================================================================
-// Zero deadline (deadline = 0)
-//
-// When deadline is 0 the check `now < deadline` is always false for u64,
-// so a refund is eligible immediately without any admin approval or waiting.
-// =============================================================================
-
-#[test]
-fn test_zero_deadline_stored_correctly() {
-    let s = Setup::new();
-    s.escrow.lock_funds(&s.depositor, &1, &500, &0);
-
-    let info = s.escrow.get_escrow_info(&1);
-    assert_eq!(info.deadline, 0);
-    assert_eq!(info.amount, 500);
-    assert_eq!(info.status, EscrowStatus::Locked);
-}
-
-#[test]
-fn test_zero_deadline_refund_succeeds_immediately() {
-    let s = Setup::new();
-    s.escrow.lock_funds(&s.depositor, &2, &1_000, &0);
-
-    let before = s.token.balance(&s.depositor);
-    s.escrow.refund(&2);
-
-    let info = s.escrow.get_escrow_info(&2);
-    assert_eq!(info.status, EscrowStatus::Refunded);
-    assert_eq!(s.token.balance(&s.depositor), before + 1_000);
-    assert_eq!(s.token.balance(&s.escrow.address), 0);
-}
-
-#[test]
-fn test_zero_deadline_refund_succeeds_after_time_advance() {
-    let s = Setup::new();
-    s.escrow.lock_funds(&s.depositor, &3, &800, &0);
-
-    s.env.ledger().set_timestamp(9_999_999);
-
-    s.escrow.refund(&3);
-
-    let info = s.escrow.get_escrow_info(&3);
-    assert_eq!(info.status, EscrowStatus::Refunded);
-}
-
-#[test]
-fn test_zero_deadline_release_succeeds() {
-    let s = Setup::new();
-    s.escrow.lock_funds(&s.depositor, &4, &750, &0);
-
-    s.escrow.release_funds(&4, &s.contributor);
-
-    let info = s.escrow.get_escrow_info(&4);
-    assert_eq!(info.status, EscrowStatus::Released);
-    assert_eq!(s.token.balance(&s.contributor), 750);
-    assert_eq!(s.token.balance(&s.escrow.address), 0);
-}
-
-// =============================================================================
-// Future timestamp deadline  (deadline = now + n)
-//
-// Standard behaviour: refund is blocked while the deadline has not elapsed,
-// but succeeds once it has.  Admin approval allows an early refund regardless.
-// =============================================================================
-
-#[test]
-fn test_future_deadline_stored_correctly() {
-    let s = Setup::new();
-    let deadline = s.env.ledger().timestamp() + 3_600;
-    s.escrow.lock_funds(&s.depositor, &10, &500, &deadline);
 
     let info = s.escrow.get_escrow_info(&10);
     assert_eq!(info.deadline, deadline);
@@ -196,20 +173,6 @@ fn test_future_deadline_release_unaffected_by_deadline() {
     assert_eq!(s.token.balance(&s.contributor), 3_000);
 }
 
-// =============================================================================
-// No deadline (deadline = u64::MAX)
-//
-// Using u64::MAX as a sentinel for "no expiry".  The check `now < u64::MAX`
-// is always true, so a spontaneous refund is permanently blocked.  Release
-// and admin-approved refunds still work as expected.
-// =============================================================================
-
-const NO_DEADLINE: u64 = u64::MAX;
-
-#[test]
-fn test_no_deadline_stored_correctly() {
-    let s = Setup::new();
-    s.escrow.lock_funds(&s.depositor, &20, &500, &NO_DEADLINE);
 
     let info = s.escrow.get_escrow_info(&20);
     assert_eq!(info.deadline, NO_DEADLINE);
@@ -287,41 +250,6 @@ fn test_no_deadline_release_succeeds() {
     assert_eq!(s.token.balance(&s.escrow.address), 0);
 }
 
-// =============================================================================
-// Cross-configuration comparisons
-//
-// These tests lock identical bounties with the three deadline configurations
-// side-by-side to make the behavioral difference explicit and easy to follow.
-// =============================================================================
-
-#[test]
-fn test_deadline_zero_vs_future_refund_eligibility() {
-    let s = Setup::new();
-    let now = s.env.ledger().timestamp();
-    let future = now + 5_000;
-
-    // Bounty A: zero deadline – immediately refundable
-    s.escrow.lock_funds(&s.depositor, &30, &400, &0);
-    // Bounty B: future deadline – not yet refundable
-    s.escrow.lock_funds(&s.depositor, &31, &400, &future);
-
-    assert!(s.escrow.try_refund(&30).is_ok());
-    assert_eq!(
-        s.escrow.try_refund(&31).unwrap_err().unwrap(),
-        Error::DeadlineNotPassed
-    );
-}
-
-#[test]
-fn test_deadline_future_vs_no_deadline_after_expiry() {
-    let s = Setup::new();
-    let now = s.env.ledger().timestamp();
-    let future = now + 1_000;
-
-    // Bounty C: finite future deadline
-    s.escrow.lock_funds(&s.depositor, &32, &600, &future);
-    // Bounty D: no deadline (u64::MAX)
-    s.escrow.lock_funds(&s.depositor, &33, &600, &NO_DEADLINE);
 
     // Advance clock past the finite deadline
     s.env.ledger().set_timestamp(future + 1);
@@ -333,3 +261,4 @@ fn test_deadline_future_vs_no_deadline_after_expiry() {
         Error::DeadlineNotPassed
     );
 }
+

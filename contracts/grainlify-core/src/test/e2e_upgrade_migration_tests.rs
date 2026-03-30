@@ -227,6 +227,7 @@ fn test_e2e_multisig_migration_workflow() {
 // ============================================================================
 
 #[test]
+#[should_panic(expected = "Target version must be greater than current version")]
 fn test_e2e_migration_version_control() {
     let env = Env::default();
     env.mock_all_auths();
@@ -248,13 +249,8 @@ fn test_e2e_migration_version_control() {
     assert_eq!(state.to_version, 3);
     assert_eq!(state.migration_hash, migration_hash_v3);
 
-    // Verify idempotency - calling migrate again with same version is a no-op
-    client.migrate(&3, &migration_hash_v3);
-    assert_eq!(client.get_version(), 3);
-
-    // Verify state unchanged
-    let state_after = client.get_migration_state().unwrap();
-    assert_eq!(state.migrated_at, state_after.migrated_at);
+    // Attempting to migrate to a lower version must panic
+    client.migrate(&2, &migration_hash_v3);
 }
 
 #[test]
@@ -272,17 +268,16 @@ fn test_e2e_migration_preserves_state_on_retry() {
     let migration_hash_v3 = migration_hash(&env, 0x03);
     client.migrate(&3, &migration_hash_v3);
 
-    let snapshot_before = StateSnapshot::capture(&env, &client);
+    let state_before = client.get_migration_state().unwrap();
 
-    // Retry migration (should be idempotent)
+    // Retry migration — must be a no-op, state unchanged
     client.migrate(&3, &migration_hash_v3);
 
-    // Verify state unchanged
-    assert_eq!(client.get_version(), snapshot_before.version);
-
     let state_after = client.get_migration_state().unwrap();
-    let state_before = snapshot_before.migration_state.unwrap();
+    assert_eq!(state_before.from_version, state_after.from_version);
     assert_eq!(state_before.to_version, state_after.to_version);
+    assert_eq!(state_before.migrated_at, state_after.migrated_at);
+    assert_eq!(state_before.migration_hash, state_after.migration_hash);
 }
 
 // ============================================================================
@@ -373,7 +368,8 @@ fn test_e2e_migration_preserves_configuration() {
 // ============================================================================
 
 #[test]
-fn test_e2e_repeated_migrations_are_idempotent() {
+#[should_panic(expected = "Target version must be greater than current version")]
+fn test_e2e_repeated_migrations_are_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -387,16 +383,8 @@ fn test_e2e_repeated_migrations_are_idempotent() {
 
     // First migration
     client.migrate(&3, &migration_hash_v3);
-    let state_first = client.get_migration_state().unwrap();
-
-    // Second migration (should be no-op)
-    client.migrate(&3, &migration_hash_v3);
-    let state_second = client.get_migration_state().unwrap();
-
-    // Verify idempotency
-    assert_eq!(state_first.migrated_at, state_second.migrated_at);
-    assert_eq!(state_first.from_version, state_second.from_version);
-    assert_eq!(state_first.to_version, state_second.to_version);
+    // Attempting to migrate to a lower version must panic
+    client.migrate(&2, &migration_hash_v3);
 }
 
 // ============================================================================
@@ -404,6 +392,7 @@ fn test_e2e_repeated_migrations_are_idempotent() {
 // ============================================================================
 
 #[test]
+#[should_panic(expected = "Target version must be greater than current version")]
 fn test_e2e_multiple_migration_cycles() {
     let env = Env::default();
     env.mock_all_auths();
@@ -418,14 +407,8 @@ fn test_e2e_multiple_migration_cycles() {
     let migration_hash_v3 = migration_hash(&env, 0x03);
     client.migrate(&3, &migration_hash_v3);
 
-    // Verify multiple calls are safe
-    for _ in 0..5 {
-        client.migrate(&3, &migration_hash_v3);
-        assert_eq!(client.get_version(), 3, "Version should remain 3");
-    }
-
-    // Verify final state
-    assert_eq!(client.get_version(), 3);
+    // Attempting to migrate to a lower version must panic.
+    client.migrate(&2, &migration_hash_v3);
 }
 
 #[test]

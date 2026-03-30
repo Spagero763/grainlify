@@ -19,33 +19,45 @@
 //! 9. **Version Compatibility** - Validate version information
 //! 10. **Balance Sanity** - Verify token balance consistency
 
-use crate::{Escrow, EscrowStatus, Error};
-use soroban_sdk::{contracttype, Env, String, Vec, Symbol};
+use crate::{Error, Escrow, EscrowStatus};
+use soroban_sdk::{contracttype, Env, String, Vec};
 
-/// Result of upgrade safety validation
+/// Result of pre-upgrade validation.
+///
+/// This report is returned by [`simulate_upgrade`] and is intended for
+/// admin/operator review before calling the actual upgrade entrypoint.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct UpgradeSafetyReport {
+    /// `true` when no blocking safety errors were found.
     pub is_safe: bool,
+    /// Number of checklist checks that completed successfully.
     pub checks_passed: u32,
+    /// Number of checklist checks that failed.
     pub checks_failed: u32,
+    /// Non-blocking concerns that should be reviewed by operators.
     pub warnings: Vec<UpgradeWarning>,
+    /// Blocking safety findings that must be resolved before upgrade.
     pub errors: Vec<UpgradeError>,
 }
 
-/// Warning during upgrade safety check
+/// Non-blocking upgrade-safety warning.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct UpgradeWarning {
+    /// Stable warning code for machine-readable handling.
     pub code: u32,
+    /// Human-readable warning message.
     pub message: String,
 }
 
-/// Error during upgrade safety check
+/// Blocking upgrade-safety error.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct UpgradeError {
+    /// Stable error code for machine-readable handling.
     pub code: u32,
+    /// Human-readable error message.
     pub message: String,
 }
 
@@ -79,14 +91,19 @@ pub mod safety_codes {
     pub const BALANCE_SANITY: u32 = 1010;
 }
 
-/// Enable or disable upgrade safety checks
+/// Enables or disables upgrade safety checks.
+///
+/// # Notes
+/// - Safety checks are enabled by default.
+/// - Disabling checks bypasses [`validate_upgrade`] protections and should be
+///   used only for emergency/manual recovery procedures.
 pub fn set_safety_checks_enabled(env: &Env, enabled: bool) {
     env.storage()
         .instance()
         .set(&UPGRADE_SAFETY_ENABLED, &enabled);
 }
 
-/// Check if safety checks are enabled
+/// Returns whether upgrade safety checks are currently enabled.
 pub fn is_safety_checks_enabled(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -94,15 +111,13 @@ pub fn is_safety_checks_enabled(env: &Env) -> bool {
         .unwrap_or(true) // Safety checks enabled by default
 }
 
-/// Record last safety check timestamp
+/// Records the current ledger timestamp as the most recent safety-check run.
 pub fn record_safety_check(env: &Env) {
     let timestamp = env.ledger().timestamp();
-    env.storage()
-        .instance()
-        .set(&LAST_SAFETY_CHECK, &timestamp);
+    env.storage().instance().set(&LAST_SAFETY_CHECK, &timestamp);
 }
 
-/// Get last safety check timestamp
+/// Returns the timestamp of the last recorded safety-check run, if any.
 pub fn get_last_safety_check(env: &Env) -> Option<u64> {
     env.storage().instance().get(&LAST_SAFETY_CHECK)
 }
@@ -110,22 +125,31 @@ pub fn get_last_safety_check(env: &Env) -> Option<u64> {
 /// Simulate an upgrade by performing all safety checks without mutating state.
 /// This is a read-only dry-run that validates upgrade safety.
 ///
-/// Returns an UpgradeSafetyReport with detailed results of all checks.
+/// # Returns
+/// Detailed [`UpgradeSafetyReport`] containing both blocking errors and
+/// non-blocking warnings.
 pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
     let mut warnings: Vec<UpgradeWarning> = Vec::new(env);
-    let mut errors: Vec<UpgradeError> = Vec::new();
+    let mut errors: Vec<UpgradeError> = Vec::new(env);
     let mut checks_passed: u32 = 0;
     let mut checks_failed: u32 = 0;
 
     // Check 1: Storage Layout Compatibility
-    if check_storage_layout_compatibility(env) {
+    let (storage_ok, storage_warnings) = check_storage_layout_compatibility(env);
+    if storage_ok {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::STORAGE_LAYOUT,
-            message: soroban_sdk::String::from_str(env, "Storage layout incompatible with current state"),
+            message: soroban_sdk::String::from_str(
+                env,
+                "Storage layout incompatible with current state",
+            ),
         });
+    }
+    for w in storage_warnings {
+        warnings.push_back(w);
     }
 
     // Check 2: Contract Initialization
@@ -133,7 +157,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::INITIALIZATION,
             message: soroban_sdk::String::from_str(env, "Contract not properly initialized"),
         });
@@ -145,13 +169,13 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::ESCROW_STATE,
             message: soroban_sdk::String::from_str(env, "One or more escrows in invalid state"),
         });
     }
     for w in escrow_warnings {
-        warnings.push(w);
+        warnings.push_back(w);
     }
 
     // Check 4: Pending Claims Verification
@@ -159,7 +183,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::PENDING_CLAIMS,
             message: soroban_sdk::String::from_str(env, "Invalid pending claims detected"),
         });
@@ -170,7 +194,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::ADMIN_AUTHORITY,
             message: soroban_sdk::String::from_str(env, "Admin authority not properly set"),
         });
@@ -181,7 +205,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::TOKEN_CONFIG,
             message: soroban_sdk::String::from_str(env, "Token not properly configured"),
         });
@@ -191,7 +215,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
     if check_feature_flags(env) {
         checks_passed += 1;
     } else {
-        warnings.push(UpgradeWarning {
+        warnings.push_back(UpgradeWarning {
             code: safety_codes::FEATURE_FLAGS,
             message: soroban_sdk::String::from_str(env, "Feature flags may need review"),
         });
@@ -203,7 +227,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::REENTRANCY_LOCK,
             message: soroban_sdk::String::from_str(env, "Reentrancy lock is stuck"),
         });
@@ -213,7 +237,7 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
     if check_version_compatibility(env) {
         checks_passed += 1;
     } else {
-        warnings.push(UpgradeWarning {
+        warnings.push_back(UpgradeWarning {
             code: safety_codes::VERSION_COMPAT,
             message: soroban_sdk::String::from_str(env, "Version information may be inconsistent"),
         });
@@ -226,13 +250,13 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
         checks_passed += 1;
     } else {
         checks_failed += 1;
-        errors.push(UpgradeError {
+        errors.push_back(UpgradeError {
             code: safety_codes::BALANCE_SANITY,
             message: soroban_sdk::String::from_str(env, "Token balance inconsistency detected"),
         });
     }
     for w in balance_warnings {
-        warnings.push(w);
+        warnings.push_back(w);
     }
 
     // Record the safety check
@@ -249,13 +273,64 @@ pub fn simulate_upgrade(env: &Env) -> UpgradeSafetyReport {
 
 // Private check functions
 
-fn check_storage_layout_compatibility(env: &Env) -> bool {
-    // In Soroban, storage layout compatibility is primarily ensured by:
-    // 1. Not removing existing storage keys
-    // 2. Not changing the type of existing storage keys
-    // This check verifies the contract has been initialized (meaning storage exists)
-    // and that we can read from it - which implies layout compatibility for reading
-    env.storage().instance().has(&crate::DataKey::Admin)
+fn check_storage_layout_compatibility(env: &Env) -> (bool, Vec<UpgradeWarning>) {
+    let mut warnings: Vec<UpgradeWarning> = Vec::new(env);
+
+    // Baseline keys expected by all client generations.
+    if !env.storage().instance().has(&crate::DataKey::Admin) {
+        return (false, warnings);
+    }
+    if !env.storage().instance().has(&crate::DataKey::Token) {
+        return (false, warnings);
+    }
+
+    // EscrowIndex is persistent; verify entries are resolvable against either
+    // legacy Escrow or extension EscrowAnon, but never both for the same id.
+    let ids: soroban_sdk::Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&crate::DataKey::EscrowIndex)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+    let sample_len = ids.len().min(100);
+    for idx in 0..sample_len {
+        let bounty_id = ids.get(idx).unwrap();
+        let has_standard = env
+            .storage()
+            .persistent()
+            .has(&crate::DataKey::Escrow(bounty_id));
+        let has_anonymous = env
+            .storage()
+            .persistent()
+            .has(&crate::DataKey::EscrowAnon(bounty_id));
+
+        if has_standard && has_anonymous {
+            return (false, warnings);
+        }
+        if !has_standard && !has_anonymous {
+            return (false, warnings);
+        }
+    }
+
+    // Optional extension key: claim window may be absent for legacy deployments.
+    if env.storage().instance().has(&crate::DataKey::ClaimWindow) {
+        let claim_window: u64 = env
+            .storage()
+            .instance()
+            .get(&crate::DataKey::ClaimWindow)
+            .unwrap_or(0);
+        if claim_window > 31_536_000 * 10 {
+            warnings.push_back(UpgradeWarning {
+                code: safety_codes::STORAGE_LAYOUT,
+                message: soroban_sdk::String::from_str(
+                    env,
+                    "Claim window unusually large; review storage extension settings",
+                ),
+            });
+        }
+    }
+
+    (true, warnings)
 }
 
 fn check_initialization(env: &Env) -> bool {
@@ -266,51 +341,64 @@ fn check_initialization(env: &Env) -> bool {
 
 fn check_escrow_states(env: &Env) -> (bool, Vec<UpgradeWarning>) {
     let mut warnings: Vec<UpgradeWarning> = Vec::new(env);
-    
-    // Get the last bounty ID
-    let last_id: u64 = env
-        .storage()
-        .instance()
-        .get(&crate::DataKey::LastBountyId)
-        .unwrap_or(0);
 
-    if last_id == 0 {
-        return (true, warnings); // No escrows to check
+    // Retrieve the index of all bounty IDs from instance storage.
+    // DataKey::EscrowIndex holds a Vec<u64> of every registered bounty_id.
+    let ids: soroban_sdk::Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&crate::DataKey::EscrowIndex)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+    if ids.is_empty() {
+        return (true, warnings); // No escrows — nothing to validate
     }
 
-    // Check a sample of escrows for state consistency
-    // In production, you might want to check all, but for performance we sample
-    let sample_size = if last_id > 100 { 100 } else { last_id };
-    
-    for i in 1..=sample_size {
-        if env.storage().persistent().has(&crate::DataKey::Escrow(i)) {
-            let escrow: Escrow = env.storage().persistent().get(&crate::DataKey::Escrow(i)).unwrap();
-            
-            // Check basic state consistency
+    // Sample up to 100 escrows for performance (production contracts may have many).
+    let sample_len = ids.len().min(100);
+
+    for idx in 0..sample_len {
+        let bounty_id = ids.get(idx).unwrap();
+        if env
+            .storage()
+            .persistent()
+            .has(&crate::DataKey::Escrow(bounty_id))
+        {
+            let escrow: Escrow = env
+                .storage()
+                .persistent()
+                .get(&crate::DataKey::Escrow(bounty_id))
+                .unwrap();
+
+            // Basic numeric invariants
             if escrow.amount < 0 || escrow.remaining_amount < 0 {
                 return (false, warnings);
             }
             if escrow.remaining_amount > escrow.amount {
                 return (false, warnings);
             }
-            
-            // Check status-specific invariants
+
+            // Status-specific invariants
             match escrow.status {
                 EscrowStatus::Released => {
                     if escrow.remaining_amount != 0 {
-                        // Warning: released escrow should have 0 remaining
-                        warnings.push(UpgradeWarning {
+                        warnings.push_back(UpgradeWarning {
                             code: safety_codes::ESCROW_STATE,
-                            message: soroban_sdk::String::from_str(env, "Released escrow has non-zero remaining amount"),
+                            message: soroban_sdk::String::from_str(
+                                env,
+                                "Released escrow has non-zero remaining amount",
+                            ),
                         });
                     }
                 }
                 EscrowStatus::Locked => {
                     if escrow.remaining_amount == 0 {
-                        // Warning: locked escrow should have remaining amount
-                        warnings.push(UpgradeWarning {
+                        warnings.push_back(UpgradeWarning {
                             code: safety_codes::ESCROW_STATE,
-                            message: soroban_sdk::String::from_str(env, "Locked escrow has zero remaining amount"),
+                            message: soroban_sdk::String::from_str(
+                                env,
+                                "Locked escrow has zero remaining amount",
+                            ),
                         });
                     }
                 }
@@ -323,23 +411,35 @@ fn check_escrow_states(env: &Env) -> (bool, Vec<UpgradeWarning>) {
 }
 
 fn check_pending_claims(env: &Env) -> bool {
-    // Get the last bounty ID
-    let last_id: u64 = env
+    // Retrieve the full bounty index from instance storage.
+    let ids: soroban_sdk::Vec<u64> = env
         .storage()
-        .instance()
-        .get(&crate::DataKey::LastBountyId)
-        .unwrap_or(0);
+        .persistent()
+        .get(&crate::DataKey::EscrowIndex)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
 
-    // Check pending claims for each bounty
-    for i in 1..=last_id {
-        if env.storage().persistent().has(&crate::DataKey::Escrow(i)) {
-            let escrow: Escrow = env.storage().persistent().get(&crate::DataKey::Escrow(i)).unwrap();
-            
-            // If there's a pending claim, verify the escrow is in Pending status
-            if env.storage().persistent().has(&crate::DataKey::Claim(i)) {
-                if escrow.status != EscrowStatus::Pending {
+    for idx in 0..ids.len() {
+        let bounty_id = ids.get(idx).unwrap();
+
+        // If a PendingClaim record exists for this bounty, the escrow itself
+        // must still be Locked (the claim references an active escrow).
+        if env
+            .storage()
+            .persistent()
+            .has(&crate::DataKey::PendingClaim(bounty_id))
+        {
+            if let Some(escrow) = env
+                .storage()
+                .persistent()
+                .get::<_, Escrow>(&crate::DataKey::Escrow(bounty_id))
+            {
+                // A pending claim against a Released/Refunded escrow is inconsistent.
+                if escrow.status != EscrowStatus::Locked {
                     return false;
                 }
+            } else {
+                // Orphan pending claim with no underlying escrow.
+                return false;
             }
         }
     }
@@ -348,16 +448,16 @@ fn check_pending_claims(env: &Env) -> bool {
 }
 
 fn check_admin_authority(env: &Env) -> bool {
-    // Admin must be set
+    // Admin must be set; reading it validates that the storage key exists and
+    // decodes to an Address without panicking.
     if !env.storage().instance().has(&crate::DataKey::Admin) {
         return false;
     }
-
-    // Admin must be a valid address (non-zero)
-    let admin: soroban_sdk::Address = env.storage().instance().get(&crate::DataKey::Admin).unwrap();
-    // In Soroban, Address::generate creates a valid address
-    // A properly set admin should not be problematic
-    
+    // Ensure the stored value actually deserialises as Address.
+    let _admin: soroban_sdk::Address = match env.storage().instance().get(&crate::DataKey::Admin) {
+        Some(a) => a,
+        None => return false,
+    };
     true
 }
 
@@ -369,23 +469,35 @@ fn check_token_config(env: &Env) -> bool {
 fn check_feature_flags(env: &Env) -> bool {
     // Check pause flags if they exist
     if env.storage().instance().has(&crate::DataKey::PauseFlags) {
-        let flags: crate::PauseFlags = env.storage().instance().get(&crate::DataKey::PauseFlags).unwrap();
-        
+        let flags: crate::PauseFlags = env
+            .storage()
+            .instance()
+            .get(&crate::DataKey::PauseFlags)
+            .unwrap();
+
         // If contract is fully paused, warn about upgrade
         // This is not a failure but a warning
-        if flags.locked {
+        if flags.lock_paused {
             return false; // Will become a warning in the main check
         }
     }
-    
+
     true
 }
 
 fn check_no_reentrancy_locks(env: &Env) -> bool {
     // If reentrancy guard exists and is set, it should be cleared
     // A stuck reentrancy guard would prevent contract operation
-    if env.storage().instance().has(&crate::DataKey::ReentrancyGuard) {
-        let guard: bool = env.storage().instance().get(&crate::DataKey::ReentrancyGuard).unwrap();
+    if env
+        .storage()
+        .instance()
+        .has(&crate::DataKey::ReentrancyGuard)
+    {
+        let guard: bool = env
+            .storage()
+            .instance()
+            .get(&crate::DataKey::ReentrancyGuard)
+            .unwrap();
         if guard {
             return false; // Reentrancy lock is stuck
         }
@@ -393,45 +505,43 @@ fn check_no_reentrancy_locks(env: &Env) -> bool {
     true
 }
 
-fn check_version_compatibility(env: &Env) -> bool {
-    // Version should be trackable
-    // This is a placeholder - actual version checking depends on how version is stored
-    // The trait provides get_version which should work
+fn check_version_compatibility(_env: &Env) -> bool {
+    // Version tracking is a no-op placeholder; the trait `ContractVersion` exposes
+    // `get_version()` which always returns a constant and cannot fail.
     true
 }
 
 fn check_balance_sanity(env: &Env) -> (bool, Vec<UpgradeWarning>) {
-    let mut warnings: Vec<UpgradeWarning> = Vec::new(env);
-    
-    // Get the last bounty ID
-    let last_id: u64 = env
-        .storage()
-        .instance()
-        .get(&crate::DataKey::LastBountyId)
-        .unwrap_or(0);
+    let warnings: Vec<UpgradeWarning> = Vec::new(env);
 
-    if last_id == 0 {
+    let ids: soroban_sdk::Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&crate::DataKey::EscrowIndex)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+    if ids.is_empty() {
         return (true, warnings);
     }
 
-    // Calculate total locked amount
+    // Sum the remaining_amount of all Locked escrows.
+    // We cannot query the token contract balance from inside the check (no token
+    // client here), but we can assert the sum is non-negative as a sanity gate.
     let mut total_locked: i128 = 0;
-    
-    for i in 1..=last_id {
-        if env.storage().persistent().has(&crate::DataKey::Escrow(i)) {
-            let escrow: Escrow = env.storage().persistent().get(&crate::DataKey::Escrow(i)).unwrap();
-            
-            match escrow.status {
-                EscrowStatus::Locked | EscrowStatus::Pending => {
-                    total_locked += escrow.remaining_amount;
-                }
-                _ => {}
+
+    for idx in 0..ids.len() {
+        let bounty_id = ids.get(idx).unwrap();
+        if let Some(escrow) = env
+            .storage()
+            .persistent()
+            .get::<_, Escrow>(&crate::DataKey::Escrow(bounty_id))
+        {
+            if escrow.status == EscrowStatus::Locked {
+                total_locked += escrow.remaining_amount;
             }
         }
     }
 
-    // We can't actually verify the token balance here without the token contract
-    // But we can ensure the total locked is non-negative
     if total_locked < 0 {
         return (false, warnings);
     }
@@ -439,8 +549,11 @@ fn check_balance_sanity(env: &Env) -> (bool, Vec<UpgradeWarning>) {
     (true, warnings)
 }
 
-/// Validate upgrade prerequisites before executing upgrade.
-/// Returns Ok(()) if upgrade can proceed, Err(Error) otherwise.
+/// Validates upgrade prerequisites before executing upgrade.
+///
+/// # Errors
+/// Returns `Error::UpgradeSafetyFailed` when blocking safety findings
+/// are detected and checks are enabled.
 pub fn validate_upgrade(env: &Env) -> Result<(), Error> {
     // Check if safety checks are enabled
     if !is_safety_checks_enabled(env) {
@@ -456,7 +569,7 @@ pub fn validate_upgrade(env: &Env) -> Result<(), Error> {
         if !report.errors.is_empty() {
             // For simplicity, we return a generic error
             // In production, you might want more specific error codes
-            return Err(Error::UpgradeSafetyCheckFailed);
+            return Err(Error::UpgradeSafetyFailed);
         }
     }
 
@@ -467,34 +580,37 @@ pub fn validate_upgrade(env: &Env) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::{BountyEscrowContract, BountyEscrowContractClient};
-    use soroban_sdk::testutils::Ledger;
-    use soroban_sdk::{testutils::Address as _, Address, Env, LedgerInfo};
+    use soroban_sdk::{testutils::Address as _, Address, Env};
 
-    fn create_test_env() -> (Env, BountyEscrowContractClient<'static>) {
+    fn create_test_env<'a>() -> (Env, BountyEscrowContractClient<'a>, soroban_sdk::Address) {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, BountyEscrowContract);
         let client = BountyEscrowContractClient::new(&env, &contract_id);
-        (env, client)
+        let addr = contract_id.clone();
+        (env, client, addr)
     }
 
     #[test]
     fn test_safety_checks_enabled_by_default() {
         let env = Env::default();
-        assert!(is_safety_checks_enabled(&env));
+        let contract_id = env.register_contract(None, BountyEscrowContract);
+        let enabled = env.as_contract(&contract_id, || is_safety_checks_enabled(&env));
+        assert!(enabled);
     }
 
     #[test]
     fn test_can_disable_safety_checks() {
         let env = Env::default();
-        set_safety_checks_enabled(&env, false);
-        assert!(!is_safety_checks_enabled(&env));
+        let contract_id = env.register_contract(None, BountyEscrowContract);
+        env.as_contract(&contract_id, || set_safety_checks_enabled(&env, false));
+        assert!(!env.as_contract(&contract_id, || is_safety_checks_enabled(&env)));
     }
 
     #[test]
     fn test_simulate_upgrade_after_init() {
-        let (env, client) = create_test_env();
-        
+        let (env, client, contract_id) = create_test_env();
+
         let admin = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
@@ -502,8 +618,7 @@ mod tests {
 
         client.init(&admin, &token);
 
-        let report = simulate_upgrade(&env);
-        // Should pass all checks after proper initialization
+        let report = env.as_contract(&contract_id, || simulate_upgrade(&env));
         assert!(report.is_safe);
     }
 
@@ -511,21 +626,25 @@ mod tests {
     fn test_simulate_upgrade_before_init_fails() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register_contract(None, BountyEscrowContract);
+        let contract_id = env.register_contract(None, BountyEscrowContract);
 
-        let report = simulate_upgrade(&env);
-        // Should fail - contract not initialized
+        let report = env.as_contract(&contract_id, || simulate_upgrade(&env));
         assert!(!report.is_safe);
     }
 
     #[test]
     fn test_record_safety_check() {
         let env = Env::default();
-        
-        assert!(get_last_safety_check(&env).is_none());
-        
-        record_safety_check(&env);
-        
-        assert!(get_last_safety_check(&env).is_some());
+        let contract_id = env.register_contract(None, BountyEscrowContract);
+
+        assert!(env
+            .as_contract(&contract_id, || get_last_safety_check(&env))
+            .is_none());
+
+        env.as_contract(&contract_id, || record_safety_check(&env));
+
+        assert!(env
+            .as_contract(&contract_id, || get_last_safety_check(&env))
+            .is_some());
     }
 }
