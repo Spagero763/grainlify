@@ -178,6 +178,53 @@ pub struct EscrowMetadataUpdatedEvent {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelConfig {
+    pub restricted: bool,
+    pub allowed_labels: Vec<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelConfigUpdatedEvent {
+    pub version: u32,
+    pub admin: Address,
+    pub restricted: bool,
+    pub allowed_labels: Vec<String>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowLabelsUpdatedEvent {
+    pub version: u32,
+    pub bounty_id: u64,
+    pub actor: Address,
+    pub labels: Vec<String>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowLabelRecord {
+    pub bounty_id: u64,
+    pub depositor: Address,
+    pub amount: i128,
+    pub remaining_amount: i128,
+    pub status: EscrowStatus,
+    pub deadline: u64,
+    pub labels: Vec<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowLabelPage {
+    pub records: Vec<EscrowLabelRecord>,
+    pub next_cursor: Option<u64>,
+    pub has_more: bool,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     Token,
@@ -686,7 +733,6 @@ impl EscrowContract {
         }
 
         // EFFECTS: write escrow state before external call
-        let labels = Vec::new(&env);
         let escrow = Escrow {
             depositor: depositor.clone(),
             amount,
@@ -694,7 +740,7 @@ impl EscrowContract {
             status: EscrowStatus::Locked,
             deadline,
             jurisdiction: jurisdiction.clone(),
-            labels: Vec::new(&env),
+            labels: Vec::<String>::new(&env),
             delegate: None,
             delegate_permissions: 0,
             metadata: None,
