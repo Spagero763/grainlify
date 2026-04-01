@@ -786,7 +786,7 @@ fn test_batch_initialize_programs_empty_err() {
     let client = ProgramEscrowContractClient::new(&env, &contract_id);
     let items: Vec<ProgramInitItem> = Vec::new(&env);
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSizeProgram))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::InvalidBatchSize))));
 }
 
 #[test]
@@ -811,7 +811,7 @@ fn test_batch_initialize_programs_duplicate_id_err() {
         reference_hash: None,
     });
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::DuplicateProgramId))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::DuplicateEntry))));
 }
 
 // =============================================================================
@@ -906,7 +906,7 @@ fn test_batch_register_exceeds_max_batch_size() {
     }
 
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::InvalidBatchSizeProgram))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::InvalidBatchSize))));
 }
 
 #[test]
@@ -976,7 +976,7 @@ fn test_batch_register_program_already_exists_error() {
     });
 
     let res = client.try_batch_initialize_programs(&second);
-    assert!(matches!(res, Err(Ok(BatchError::ProgramAlreadyExists))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::ProgramAlreadyExists))));
 
     // "brand-new" must NOT exist — all-or-nothing semantics
     assert!(!client.program_exists_by_id(&String::from_str(&env, "brand-new")));
@@ -1012,7 +1012,7 @@ fn test_batch_register_all_or_nothing_on_duplicate() {
     });
 
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::DuplicateProgramId))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::DuplicateEntry))));
 
     // Neither program should exist
     assert!(!client.program_exists_by_id(&String::from_str(&env, "alpha")));
@@ -1048,7 +1048,7 @@ fn test_batch_register_duplicate_at_tail() {
     });
 
     let res = client.try_batch_initialize_programs(&items);
-    assert!(matches!(res, Err(Ok(BatchError::DuplicateProgramId))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::DuplicateEntry))));
 }
 
 #[test]
@@ -1223,7 +1223,7 @@ fn test_batch_register_second_batch_conflicts_with_first() {
     });
 
     let res = client.try_batch_initialize_programs(&batch2);
-    assert!(matches!(res, Err(Ok(BatchError::ProgramAlreadyExists))));
+    assert!(matches!(res, Err(Ok(grainlify_core::errors::ContractError::ProgramAlreadyExists))));
 
     // "fresh" must not exist (all-or-nothing)
     assert!(!client.program_exists_by_id(&String::from_str(&env, "fresh")));

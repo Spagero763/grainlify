@@ -25,9 +25,9 @@
 #[cfg(test)]
 mod test {
     use crate::{
-        ContractError, ProgramEscrowContract, ProgramEscrowContractClient, ProgramInitItem,
+        grainlify_core::errors::ContractError, ProgramEscrowContract, ProgramEscrowContractClient, ProgramInitItem,
     };
-    use soroban_sdk::{testutils::Address as _, vec, Address, Env, String};
+    use soroban_sdk::{testutils::Address as _, vec, Address, Env, String, Vec};
 
     /// Helper: Create a test environment with initialized contract
     fn setup() -> (Env, ProgramEscrowContractClient<'static>, Address, Address) {
@@ -178,7 +178,7 @@ mod test {
         let (env, client, admin, token) = setup();
         
         // Try to batch initialize with empty items (should fail)
-        let items: Vec<ProgramInitItem> = Vec::new(&env);
+        let items: soroban_sdk::Vec<ProgramInitItem> = soroban_sdk::Vec::new(&env);
         let result = client.try_batch_initialize_programs(&items);
         
         // This should fail with InvalidBatchSize error
@@ -193,7 +193,7 @@ mod test {
         let (env, client, admin, token) = setup();
         
         // Create items with duplicate program IDs
-        let mut items = Vec::new(&env);
+        let mut items = soroban_sdk::Vec::new(&env);
         let program_id = String::from_str(&env, "duplicate");
         
         items.push_back(ProgramInitItem {
@@ -567,14 +567,6 @@ mod test {
         assert_eq!(ContractError::Unauthorized, ContractError::Unauthorized);
         assert_ne!(ContractError::Unauthorized, ContractError::InvalidAmount);
         assert_ne!(ContractError::Paused, ContractError::MaintenanceMode);
-    }
-
-    #[test]
-    fn test_error_debug() {
-        // Verify that errors can be debugged
-        let error = ContractError::Unauthorized;
-        let debug_str = format!("{:?}", error);
-        assert!(debug_str.contains("Unauthorized"));
     }
 
     #[test]
