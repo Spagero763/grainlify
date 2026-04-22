@@ -292,6 +292,15 @@
         "authorization": "admin",
         "pausable": true,
         "gas_estimate": "high"
+      },
+      {
+        "name": "accept_admin",
+        "description": "Accept a pending admin role after timelock expires",
+        "parameters": [],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "signer",
+        "pausable": false,
+        "gas_estimate": "low"
       }
     ],
     "view": [
@@ -491,6 +500,24 @@
           "type": "bool",
           "description": "True if maintenance mode is active"
         },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_pending_admin",
+        "description": "View pending admin transfer state",
+        "parameters": [],
+        "returns": { "type": "Option<AdminTransferState>", "description": "Pending state if any" },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_admin_timelock",
+        "description": "View configured admin timelock",
+        "parameters": [],
+        "returns": { "type": "u64", "description": "Duration in seconds" },
         "authorization": "any",
         "pausable": false,
         "gas_estimate": "low"
@@ -729,6 +756,37 @@
           "type": "()",
           "description": "Empty on success"
         },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "set_admin_timelock",
+        "description": "Configure the delay for admin rotation",
+        "parameters": [
+          { "name": "duration", "type": "u64", "description": "Timelock duration in seconds" }
+        ],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "propose_admin",
+        "description": "Propose a new admin address",
+        "parameters": [
+          { "name": "new_admin", "type": "Address", "description": "Address of the proposed admin" }
+        ],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "cancel_admin_transfer",
+        "description": "Cancel a pending admin transfer",
+        "parameters": [],
+        "returns": { "type": "()", "description": "Empty on success" },
         "authorization": "admin",
         "pausable": false,
         "gas_estimate": "low"

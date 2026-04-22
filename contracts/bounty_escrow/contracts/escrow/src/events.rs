@@ -1376,3 +1376,64 @@ pub fn emit_recurring_lock_cancelled(env: &Env, event: RecurringLockCancelled) {
     let topics = (symbol_short!("rl_cncl"), event.recurring_id);
     env.events().publish(topics, event);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN ROTATION EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTimelockConfigured {
+    pub version: u32,
+    pub admin: Address,
+    pub duration: u64,
+    pub timestamp: u64,
+}
+
+pub fn emit_admin_timelock_configured(env: &Env, event: AdminTimelockConfigured) {
+    let topics = (symbol_short!("adm_tlck"),);
+    env.events().publish(topics, event);
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferProposed {
+    pub version: u32,
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub available_at: u64,
+    pub timestamp: u64,
+}
+
+pub fn emit_admin_transfer_proposed(env: &Env, event: AdminTransferProposed) {
+    let topics = (symbol_short!("adm_prop"),);
+    env.events().publish(topics, event);
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferCancelled {
+    pub version: u32,
+    pub old_admin: Address,
+    pub proposed_admin: Address,
+    pub timestamp: u64,
+}
+
+pub fn emit_admin_transfer_cancelled(env: &Env, event: AdminTransferCancelled) {
+    let topics = (symbol_short!("adm_cncl"),);
+    env.events().publish(topics, event);
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferAccepted {
+    pub version: u32,
+    pub old_admin: Address,
+    pub new_admin: Address,
+    pub timestamp: u64,
+}
+
+pub fn emit_admin_transfer_accepted(env: &Env, event: AdminTransferAccepted) {
+    let topics = (symbol_short!("adm_acc"),);
+    env.events().publish(topics, event);
+}

@@ -509,3 +509,74 @@ fn test_maintenance_mode_toggles_correctly() {
     setup.escrow.set_maintenance_mode(&false, &None);
     assert_eq!(setup.escrow.is_maintenance_mode(), false);
 }
+
+// ============================================================================
+// ADMIN ROTATION TESTS
+// ============================================================================
+
+#[test]
+fn test_admin_rotation_lifecycle_success() {
+    let setup = TestSetup::new();
+    let new_admin = Address::generate(&setup.env);
+    
+    // 1. Configure Timelock to 1 hour (3600 seconds)
+    setup.escrow.set_admin_timelock(&3600);
+    assert_eq!(setup.escrow.get_admin_timelock(), 3600);
+
+    // 2. Propose Admin
+    let current_time = setup.env.ledger().timestamp();
+    setup.escrow.propose_admin(&new_admin);
+    
+    let pending = setup.escrow.get_pending_admin().unwrap();
+    assert_eq!(pending.proposed_admin, new_admin);
+    assert_eq!(pending.available_at, current_time + 3600);
+
+    // 3. Fast forward time past the timelock
+    setup.env.ledger().set_timestamp(current_time + 3601);
+
+    // 4. Accept Admin (must be signed by the new admin)
+    setup.escrow.accept_admin();
+
+    // 5. Verify the transfer state is cleaned up
+    assert!(setup.escrow.get_pending_admin().is_none());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")] // DeadlineNotPassed
+fn test_admin_rotation_fails_before_timelock() {
+    let setup = TestSetup::new();
+    let new_admin = Address::generate(&setup.env);
+    
+    setup.escrow.propose_admin(&new_admin);
+    
+    // Try to accept immediately without advancing the ledger timestamp
+    setup.escrow.accept_admin();
+}
+
+#[test]
+fn test_admin_rotation_cancel() {
+    let setup = TestSetup::new();
+    let new_admin = Address::generate(&setup.env);
+    
+    setup.escrow.propose_admin(&new_admin);
+    assert!(setup.escrow.get_pending_admin().is_some());
+    
+    setup.escrow.cancel_admin_transfer();
+    assert!(setup.escrow.get_pending_admin().is_none());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")] // Unauthorized
+fn test_accept_admin_unauthorized_if_none_pending() {
+    let setup = TestSetup::new();
+    // Try to accept when nothing is proposed
+    setup.escrow.accept_admin();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // InvalidAmount
+fn test_admin_timelock_enforces_minimum() {
+    let setup = TestSetup::new();
+    // Try to set timelock to 1 second (minimum is 300)
+    setup.escrow.set_admin_timelock(&1);
+}
