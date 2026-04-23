@@ -47,16 +47,18 @@ mod test_deterministic_error_ordering;
 mod test_reentrancy_guard;
 
 use events::{
+    emit_batch_size_caps_updated,
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized,
     emit_deprecation_state_changed, emit_deterministic_selection, emit_funds_locked,
     emit_funds_locked_anon, emit_funds_refunded, emit_funds_released,
     emit_maintenance_mode_changed, emit_notification_preferences_updated,
     emit_participant_filter_mode_changed, emit_risk_flags_updated, emit_ticket_claimed,
-    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BountyEscrowInitialized,
-    ClaimCancelled, ClaimCreated, ClaimExecuted, CriticalOperationOutcome, DeprecationStateChanged,
-    DeterministicSelectionDerived, FundsLocked, FundsLockedAnon, FundsRefunded, FundsReleased,
-    MaintenanceModeChanged, NotificationPreferencesUpdated, ParticipantFilterModeChanged,
-    RiskFlagsUpdated, TicketClaimed, TicketIssued, EVENT_VERSION_V2,
+    emit_ticket_issued, BatchFundsLocked, BatchFundsReleased, BatchSizeCapsUpdated,
+    BountyEscrowInitialized, ClaimCancelled, ClaimCreated, ClaimExecuted,
+    CriticalOperationOutcome, DeprecationStateChanged, DeterministicSelectionDerived, FundsLocked,
+    FundsLockedAnon, FundsRefunded, FundsReleased, MaintenanceModeChanged,
+    NotificationPreferencesUpdated, ParticipantFilterModeChanged, RiskFlagsUpdated,
+    TicketClaimed, TicketIssued, EVENT_VERSION_V2,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -628,6 +630,8 @@ pub enum Error {
     /// The Soroban host reverts all storage writes and token transfers in the
     /// transaction atomically. Only reachable in test / testutils builds.
     GasBudgetExceeded = 44,
+    /// Returned when an admin attempts to configure a zero or out-of-range batch cap.
+    InvalidBatchSizeCap = 45,
 }
 
 /// Bit flag: escrow or payout should be treated as elevated risk (indexers, UIs).
@@ -796,6 +800,8 @@ pub enum DataKey {
     /// Per-operation gas budget caps configured by the admin.
     /// See [`gas_budget::GasBudgetConfig`].
     GasBudgetConfig,
+    /// Append-only batch size cap configuration for batch lock/release operations.
+    BatchSizeCaps,
 }
 
 #[contracttype]
@@ -880,6 +886,15 @@ pub struct FeeConfig {
     pub treasury_destinations: Vec<TreasuryDestination>,
     /// Whether multi-region treasury routing is enabled.
     pub distribution_enabled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchSizeCaps {
+    /// Maximum allowed item count for `batch_lock_funds`.
+    pub lock_cap: u32,
+    /// Maximum allowed item count for `batch_release_funds`.
+    pub release_cap: u32,
 }
 
 /// Per-token fee configuration.
@@ -1113,6 +1128,13 @@ impl BountyEscrowContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Version, &1u32);
+        env.storage().instance().set(
+            &DataKey::BatchSizeCaps,
+            &BatchSizeCaps {
+                lock_cap: MAX_BATCH_SIZE,
+                release_cap: MAX_BATCH_SIZE,
+            },
+        );
 
         events::emit_bounty_initialized(
             &env,
@@ -1246,6 +1268,35 @@ impl BountyEscrowContract {
                 treasury_destinations: Vec::new(env),
                 distribution_enabled: false,
             })
+    }
+
+    /// Returns the effective batch size caps, defaulting to the compile-time hard limit.
+    fn get_batch_size_caps_internal(env: &Env) -> BatchSizeCaps {
+        env.storage()
+            .instance()
+            .get(&DataKey::BatchSizeCaps)
+            .unwrap_or(BatchSizeCaps {
+                lock_cap: MAX_BATCH_SIZE,
+                release_cap: MAX_BATCH_SIZE,
+            })
+    }
+
+    fn validate_batch_size_caps(caps: &BatchSizeCaps) -> Result<(), Error> {
+        if caps.lock_cap == 0
+            || caps.release_cap == 0
+            || caps.lock_cap > MAX_BATCH_SIZE
+            || caps.release_cap > MAX_BATCH_SIZE
+        {
+            return Err(Error::InvalidBatchSizeCap);
+        }
+        Ok(())
+    }
+
+    fn validate_batch_len(batch_size: u32, cap: u32) -> Result<(), Error> {
+        if batch_size == 0 || batch_size > cap {
+            return Err(Error::InvalidBatchSize);
+        }
+        Ok(())
     }
 
     /// Validates treasury destinations before enabling multi-region routing.
@@ -4655,11 +4706,56 @@ impl BountyEscrowContract {
         gas_budget::get_config(&env)
     }
 
+    /// Configure per-operation batch size caps for batch lock and batch release.
+    ///
+    /// Semantics:
+    /// - `lock_cap` applies to `batch_lock_funds`
+    /// - `release_cap` applies to `batch_release_funds`
+    /// - both values must be within `1..=MAX_BATCH_SIZE`
+    /// - deployments upgraded from older storage layouts default to `MAX_BATCH_SIZE`
+    ///   for both caps until explicitly updated
+    pub fn set_batch_size_caps(env: Env, lock_cap: u32, release_cap: u32) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let previous = Self::get_batch_size_caps_internal(&env);
+        let next = BatchSizeCaps {
+            lock_cap,
+            release_cap,
+        };
+        Self::validate_batch_size_caps(&next)?;
+
+        env.storage().instance().set(&DataKey::BatchSizeCaps, &next);
+        emit_batch_size_caps_updated(
+            &env,
+            BatchSizeCapsUpdated {
+                version: EVENT_VERSION_V2,
+                previous_lock_cap: previous.lock_cap,
+                new_lock_cap: next.lock_cap,
+                previous_release_cap: previous.release_cap,
+                new_release_cap: next.release_cap,
+                admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Return the effective batch size caps for batch lock and release entrypoints.
+    pub fn get_batch_size_caps(env: Env) -> BatchSizeCaps {
+        Self::get_batch_size_caps_internal(&env)
+    }
+
     /// Batch lock funds for multiple bounties in a single atomic transaction.
     ///
-    /// Locks between 1 and [`MAX_BATCH_SIZE`] bounties in one call, reducing
+    /// Locks between 1 and the configured lock batch cap in one call, reducing
     /// per-transaction overhead compared to repeated single-item `lock_funds`
-    /// calls.
+    /// calls. When no explicit cap has been configured, the default is
+    /// [`MAX_BATCH_SIZE`].
     ///
     /// ## Batch failure semantics
     ///
@@ -4687,14 +4783,15 @@ impl BountyEscrowContract {
     /// second pass (Interactions). This ordering prevents reentrancy attacks.
     ///
     /// # Arguments
-    /// * `items` - 1–[`MAX_BATCH_SIZE`] [`LockFundsItem`] entries (bounty_id,
-    ///   depositor, amount, deadline).
+    /// * `items` - 1 up to the effective lock batch cap [`LockFundsItem`]
+    ///   entries (bounty_id, depositor, amount, deadline).
     ///
     /// # Returns
     /// Number of bounties successfully locked (equals `items.len()` on success).
     ///
     /// # Errors
-    /// * [`Error::InvalidBatchSize`] — batch is empty or exceeds `MAX_BATCH_SIZE`
+    /// * [`Error::InvalidBatchSize`] — batch is empty or exceeds the effective
+    ///   configured lock cap
     /// * [`Error::ContractDeprecated`] — contract has been killed via `set_deprecated`
     /// * [`Error::FundsPaused`] — lock operations are currently paused
     /// * [`Error::NotInitialized`] — `init` has not been called
@@ -4720,14 +4817,9 @@ impl BountyEscrowContract {
             if Self::get_deprecation_state(&env).deprecated {
                 return Err(Error::ContractDeprecated);
             }
-            // Validate batch size
             let batch_size = items.len();
-            if batch_size == 0 {
-                return Err(Error::InvalidBatchSize);
-            }
-            if batch_size > MAX_BATCH_SIZE {
-                return Err(Error::InvalidBatchSize);
-            }
+            let lock_cap = Self::get_batch_size_caps_internal(&env).lock_cap;
+            Self::validate_batch_len(batch_size, lock_cap)?;
 
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(Error::NotInitialized);
@@ -4859,9 +4951,26 @@ impl BountyEscrowContract {
                 },
             );
 
-        // GUARD: release reentrancy lock
+            Ok(locked_count)
+        })();
+
+        #[cfg(any(test, feature = "testutils"))]
+        if result.is_ok() {
+            let gas_cfg = gas_budget::get_config(&env);
+            if let Err(e) = gas_budget::check(
+                &env,
+                symbol_short!("b_lock"),
+                &gas_cfg.batch_lock,
+                &gas_snapshot,
+                gas_cfg.enforce,
+            ) {
+                reentrancy_guard::release(&env);
+                return Err(e);
+            }
+        }
+
         reentrancy_guard::release(&env);
-        Ok(locked_count)
+        result
     }
 
     /// Alias for batch_lock_funds to match the requested naming convention.
@@ -4871,9 +4980,10 @@ impl BountyEscrowContract {
 
     /// Batch release funds to multiple contributors in a single atomic transaction.
     ///
-    /// Releases between 1 and [`MAX_BATCH_SIZE`] bounties in one admin-authorised
-    /// call, reducing per-transaction overhead compared to repeated single-item
-    /// `release_funds` calls.
+    /// Releases between 1 and the configured release batch cap in one
+    /// admin-authorised call, reducing per-transaction overhead compared to
+    /// repeated single-item `release_funds` calls. When no explicit cap has
+    /// been configured, the default is [`MAX_BATCH_SIZE`].
     ///
     /// ## Batch failure semantics
     ///
@@ -4900,14 +5010,15 @@ impl BountyEscrowContract {
     /// (Interactions).
     ///
     /// # Arguments
-    /// * `items` - 1–[`MAX_BATCH_SIZE`] [`ReleaseFundsItem`] entries (bounty_id,
-    ///   contributor address).
+    /// * `items` - 1 up to the effective release batch cap [`ReleaseFundsItem`]
+    ///   entries (bounty_id, contributor address).
     ///
     /// # Returns
     /// Number of bounties successfully released (equals `items.len()` on success).
     ///
     /// # Errors
-    /// * [`Error::InvalidBatchSize`] — batch is empty or exceeds `MAX_BATCH_SIZE`
+    /// * [`Error::InvalidBatchSize`] — batch is empty or exceeds the effective
+    ///   configured release cap
     /// * [`Error::FundsPaused`] — release operations are currently paused
     /// * [`Error::NotInitialized`] — `init` has not been called
     /// * [`Error::Unauthorized`] — caller is not the admin
@@ -4928,14 +5039,9 @@ impl BountyEscrowContract {
         #[cfg(any(test, feature = "testutils"))]
         let gas_snapshot = gas_budget::capture(&env);
         let result: Result<u32, Error> = (|| {
-            // Validate batch size
             let batch_size = items.len();
-            if batch_size == 0 {
-                return Err(Error::InvalidBatchSize);
-            }
-            if batch_size > MAX_BATCH_SIZE {
-                return Err(Error::InvalidBatchSize);
-            }
+            let release_cap = Self::get_batch_size_caps_internal(&env).release_cap;
+            Self::validate_batch_len(batch_size, release_cap)?;
 
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(Error::NotInitialized);

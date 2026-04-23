@@ -1,9 +1,9 @@
 {
   "$schema": "./contract-manifest-schema.json",
   "contract_name": "BountyEscrowContract",
-  "contract_purpose": "Manages bounty escrow with multi-token support, capability-based authorization, fee configuration, and comprehensive security features including reentrancy protection and rate limiting",
+  "contract_purpose": "Manages bounty escrow with multi-token support, capability-based authorization, configurable batch size caps, fee configuration, and comprehensive security features including reentrancy protection and rate limiting",
   "version": {
-    "current": "2.0.0",
+    "current": "2.1.0",
     "schema": "1.0.0",
     "history": [
       {
@@ -25,6 +25,15 @@
           "Added rate limiting and anti-abuse mechanisms",
           "Enhanced monitoring and analytics",
           "Added claim period functionality"
+        ]
+      },
+      {
+        "version": "2.1.0",
+        "release_date": "2026-04-23",
+        "changes": [
+          "Added admin-configurable batch size caps for batch lock and batch release",
+          "Added audit event for batch size cap updates",
+          "Added upgrade-safe storage for persisted batch cap configuration"
         ]
       }
     ]
@@ -268,8 +277,8 @@
           }
         ],
         "returns": {
-          "type": "Vec<Escrow>",
-          "description": "Array of created escrow records"
+          "type": "u32",
+          "description": "Number of bounties successfully locked"
         },
         "authorization": "signer",
         "pausable": true,
@@ -286,12 +295,35 @@
           }
         ],
         "returns": {
-          "type": "Vec<()>",
-          "description": "Array of results"
+          "type": "u32",
+          "description": "Number of bounties successfully released"
         },
         "authorization": "admin",
         "pausable": true,
         "gas_estimate": "high"
+      },
+      {
+        "name": "set_batch_size_caps",
+        "description": "Update the effective batch size caps for batch lock and batch release operations",
+        "parameters": [
+          {
+            "name": "lock_cap",
+            "type": "u32",
+            "description": "Maximum number of items allowed in batch_lock_funds"
+          },
+          {
+            "name": "release_cap",
+            "type": "u32",
+            "description": "Maximum number of items allowed in batch_release_funds"
+          }
+        ],
+        "returns": {
+          "type": "()",
+          "description": "Empty on success"
+        },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
       }
     ],
     "view": [
@@ -338,6 +370,18 @@
         "returns": {
           "type": "FeeConfig",
           "description": "Fee configuration"
+        },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_batch_size_caps",
+        "description": "Get the effective batch size caps for batch lock and batch release",
+        "parameters": [],
+        "returns": {
+          "type": "BatchSizeCaps",
+          "description": "Current effective batch size cap configuration"
         },
         "authorization": "any",
         "pausable": false,
@@ -672,9 +716,25 @@
         "name": "MAX_BATCH_SIZE",
         "type": "u32",
         "default_value": "20",
-        "description": "Maximum number of items in batch operations",
-        "constraints": "1 <= value <= 100",
+        "description": "Compile-time hard upper bound for admin-configurable batch caps",
+        "constraints": "value = 20",
         "admin_only": false
+      },
+      {
+        "name": "batch_lock_cap",
+        "type": "u32",
+        "default_value": "20",
+        "description": "Effective runtime cap for batch_lock_funds",
+        "constraints": "1 <= value <= MAX_BATCH_SIZE",
+        "admin_only": true
+      },
+      {
+        "name": "batch_release_cap",
+        "type": "u32",
+        "default_value": "20",
+        "description": "Effective runtime cap for batch_release_funds",
+        "constraints": "1 <= value <= MAX_BATCH_SIZE",
+        "admin_only": true
       },
       {
         "name": "lock_fee_rate",
@@ -762,6 +822,12 @@
         "type": "temporary",
         "description": "Reentrancy protection flag",
         "data_structure": "bool"
+      },
+      {
+        "name": "BatchSizeCaps",
+        "type": "instance",
+        "description": "Append-only batch size cap configuration for batch lock and release",
+        "data_structure": "BatchSizeCaps"
       }
     ]
   },
@@ -993,6 +1059,48 @@
           }
         ],
         "trigger": "Successful refund_funds call"
+      },
+      {
+        "name": "BatchSizeCapsUpdated",
+        "description": "Batch size cap configuration updated by the admin",
+        "data": [
+          {
+            "name": "version",
+            "type": "u32",
+            "description": "Event schema version"
+          },
+          {
+            "name": "previous_lock_cap",
+            "type": "u32",
+            "description": "Prior effective cap for batch_lock_funds"
+          },
+          {
+            "name": "new_lock_cap",
+            "type": "u32",
+            "description": "New effective cap for batch_lock_funds"
+          },
+          {
+            "name": "previous_release_cap",
+            "type": "u32",
+            "description": "Prior effective cap for batch_release_funds"
+          },
+          {
+            "name": "new_release_cap",
+            "type": "u32",
+            "description": "New effective cap for batch_release_funds"
+          },
+          {
+            "name": "admin",
+            "type": "Address",
+            "description": "Admin that changed the caps"
+          },
+          {
+            "name": "timestamp",
+            "type": "u64",
+            "description": "Update timestamp"
+          }
+        ],
+        "trigger": "Successful set_batch_size_caps call"
       }
     ]
   },
