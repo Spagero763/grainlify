@@ -3442,6 +3442,7 @@ impl BountyEscrowContract {
     /// # Security
     /// Reentrancy guard is always cleared before any explicit error return after acquisition.
     pub fn release_funds(env: Env, bounty_id: u64, contributor: Address) -> Result<(), Error> {
+        let _guard = NonReentrant::enter(&env);
         Self::validate_claim_window(env.clone(), bounty_id)?;
         let caller = env
             .storage()
@@ -5707,6 +5708,54 @@ impl BountyEscrowContract {
 
         Ok(metadata.map(|m| m.risk_flags).unwrap_or(0))
     }
+
+    // ============================================================================
+    // CEI + REENTRANCY GUARD HARDENING
+    // ============================================================================
+
+    /// View: Checks if the reentrancy guard is currently active.
+    pub fn is_reentrancy_guard_locked(env: Env) -> bool {
+        env.storage().instance().get(&symbol_short!("r_guard")).unwrap_or(false)
+    }
+}
+
+
+/// RAII Reentrancy Guard for Soroban Smart Contracts.
+/// Locks upon creation and automatically unlocks when dropped at the end of the scope.
+/// Enforces Checks-Effects-Interactions (CEI) safety constraints.
+pub struct NonReentrant<'a> {
+    env: &'a Env,
+}
+
+impl<'a> NonReentrant<'a> {
+    /// Enters the protected scope. Panics if already entered.
+    pub fn enter(env: &'a Env) -> Self {
+        let key = symbol_short!("r_guard");
+        let is_entered: bool = env.storage().instance().get(&key).unwrap_or(false);
+        
+        if is_entered {
+            events::emit_reentrancy_attempt_blocked(
+                env,
+                events::ReentrancyAttemptBlocked {
+                    version: events::EVENT_VERSION_V2,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+            panic!("Error(Contract, #14): Reentrancy detected"); 
+        }
+        
+        // Lock the guard
+        env.storage().instance().set(&key, &true);
+        
+        Self { env }
+    }
+}
+
+impl<'a> Drop for NonReentrant<'a> {
+    fn drop(&mut self) {
+        // Automatically unlock when the struct goes out of scope
+        self.env.storage().instance().remove(&symbol_short!("r_guard"));
+    }
 }
 impl traits::EscrowInterface for BountyEscrowContract {
     /// Lock funds for a bounty through the trait interface
@@ -5724,6 +5773,7 @@ impl traits::EscrowInterface for BountyEscrowContract {
 
     /// Release funds to contributor through the trait interface
     fn release_funds(env: &Env, bounty_id: u64, contributor: Address) -> Result<(), crate::Error> {
+        let _guard = NonReentrant::enter(&env);
         Self::validate_claim_window(env.clone(), bounty_id)?;
         let entrypoint: fn(Env, u64, Address) -> Result<(), crate::Error> =
             BountyEscrowContract::release_funds;

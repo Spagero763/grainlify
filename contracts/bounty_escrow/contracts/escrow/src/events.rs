@@ -1532,3 +1532,19 @@ pub fn emit_max_batch_size_updated(env: &Env, event: MaxBatchSizeUpdated) {
     let topics = (symbol_short!("b_cap_up"),);
     env.events().publish(topics, event);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REENTRANCY GUARD EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReentrancyAttemptBlocked {
+    pub version: u32,
+    pub timestamp: u64,
+}
+
+pub fn emit_reentrancy_attempt_blocked(env: &Env, event: ReentrancyAttemptBlocked) {
+    let topics = (symbol_short!("r_guard"),);
+    env.events().publish(topics, event);
+}

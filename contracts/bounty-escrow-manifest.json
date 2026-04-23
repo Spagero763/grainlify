@@ -596,6 +596,15 @@
         "authorization": "any",
         "pausable": false,
         "gas_estimate": "low"
+      },
+      {
+        "name": "is_reentrancy_guard_locked",
+        "description": "View current state of the upgrade-safe reentrancy guard",
+        "parameters": [],
+        "returns": { "type": "bool", "description": "True if currently locked" },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
       }
     ],
     "admin": [
