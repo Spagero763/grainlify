@@ -892,6 +892,8 @@ pub struct MaintenanceModeChangedV2 {
     pub version: u32,
     pub previous_enabled: bool,
     pub enabled: bool,
+    /// Optional reason string supplied by the admin.
+    pub reason: Option<soroban_sdk::String>,
     pub admin: Address,
     pub timestamp: u64,
 }
@@ -1682,5 +1684,86 @@ pub struct QueuedReleaseExecuted {
 
 pub fn emit_queued_release_executed(env: &Env, event: QueuedReleaseExecuted) {
     let topics = (symbol_short!("hv_exec"), event.bounty_id);
+    env.events().publish(topics, event);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEE ROUTING INVARIANT & SCHEMA EVENTS  (Issue #30)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Audit event emitted after every fee routing operation.
+///
+/// Proves that `distributed_total == fee_amount` (the fee routing invariant).
+/// A `false` value for `invariant_ok` is impossible in a correct execution —
+/// the contract panics immediately after emitting this event if the invariant
+/// is violated.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"fee_inv"` |
+/// | 1 | `bounty_id: u64` |
+///
+/// ### Security notes
+/// - Emitted for **both** single-recipient and multi-destination routing paths.
+/// - `invariant_ok` MUST always be `true` on-chain; any `false` value indicates
+///   a critical accounting bug that was caught and reverted.
+/// - Indexers can verify fee routing correctness by asserting all
+///   `FeeRoutingInvariantChecked` events have `invariant_ok == true`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeRoutingInvariantChecked {
+    pub version: u32,
+    /// Bounty this fee was collected for.
+    pub bounty_id: u64,
+    /// Lock or Release operation.
+    pub operation_type: FeeOperationType,
+    /// Original deposit/payout amount before fee deduction.
+    pub gross_amount: i128,
+    /// Total fee amount that was routed.
+    pub fee_amount: i128,
+    /// Sum of all shares actually transferred to destinations.
+    /// Must equal `fee_amount` — enforced by last-destination remainder assignment.
+    pub distributed_total: i128,
+    /// Sum of all destination weights used in proportional routing.
+    pub weight_total: u64,
+    /// Number of treasury destinations fee was split across.
+    pub destination_count: u32,
+    /// Whether `distributed_total == fee_amount`. Always `true` on-chain.
+    pub invariant_ok: bool,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+}
+
+/// Emit [`FeeRoutingInvariantChecked`].
+pub fn emit_fee_routing_invariant_checked(env: &Env, event: FeeRoutingInvariantChecked) {
+    let topics = (symbol_short!("fee_inv"), event.bounty_id);
+    env.events().publish(topics, event);
+}
+
+/// Emitted once during `init()` to record the fee routing storage schema version.
+///
+/// Enables upgrade safety checks to detect schema mismatches when the
+/// `FeeConfig` or `TreasuryDestination` layout changes.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"fee_schm"` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeRoutingSchemaVersionSet {
+    pub version: u32,
+    /// Fee routing schema version written to instance storage.
+    pub schema_version: u32,
+    /// Admin that initialized the contract.
+    pub set_by: Address,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+}
+
+/// Emit [`FeeRoutingSchemaVersionSet`].
+pub fn emit_fee_routing_schema_version_set(env: &Env, event: FeeRoutingSchemaVersionSet) {
+    let topics = (symbol_short!("fee_schm"),);
     env.events().publish(topics, event);
 }

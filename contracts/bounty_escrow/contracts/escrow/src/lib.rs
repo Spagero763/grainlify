@@ -630,6 +630,8 @@ pub enum Error {
     InvalidAdminRotationTimelock = 50,
     /// The proposed admin target is invalid for rotation.
     InvalidAdminRotationTarget = 51,
+    /// Batch size cap is outside the accepted bounds (1..=MAX_BATCH_SIZE).
+    InvalidBatchSizeCap = 52,
 }
 
 /// Bit flag: escrow or payout should be treated as elevated risk (indexers, UIs).
@@ -858,6 +860,8 @@ pub enum DataKey {
     /// Stored schema marker for fee routing storage layout versioning.
     /// Increment when the `FeeConfig` or `TreasuryDestination` layout changes.
     FeeRoutingSchemaVersion,
+    /// Runtime-configurable batch size caps for lock and release operations.
+    BatchSizeCaps,
 }
 
 #[contracttype]
