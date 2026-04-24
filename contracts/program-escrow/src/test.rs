@@ -2500,3 +2500,287 @@ fn test_program_update_fee_config_disables_fees() {
     assert_eq!(token_client.balance(&fee_bucket), 1_000);
     let _ = admin;
 }
+
+// =============================================================================
+// CIRCUIT BREAKER ENFORCEMENT TESTS (Issue #13)
+// =============================================================================
+//
+// These tests verify the circuit breaker invariants:
+//   - Circuit opens after failure_threshold consecutive failures
+//   - Open circuit rejects payouts with "Circuit breaker is OPEN"
+//   - Admin can reset Open → HalfOpen → Closed
+//   - emergency_open_circuit immediately blocks payouts
+//   - get_circuit_status returns accurate state snapshots
+//   - Upgrade-safe schema version is written on init
+//   - Threshold monitoring integrates with circuit breaker
+
+fn setup_with_circuit(
+    env: &Env,
+    initial_amount: i128,
+) -> (
+    ProgramEscrowContractClient<'static>,
+    Address, // admin / circuit admin
+    soroban_sdk::token::Client<'static>,
+    soroban_sdk::token::StellarAssetClient<'static>,
+) {
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let token_client = soroban_sdk::token::Client::new(env, &token_id);
+    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(env, &token_id);
+
+    let program_id = String::from_str(env, "cb-test");
+    client.init_program(&program_id, &admin, &token_id, &admin, &None, &None);
+    client.publish_program();
+    client.set_circuit_admin(&admin, &None);
+
+    if initial_amount > 0 {
+        token_admin_client.mint(&client.address, &initial_amount);
+        client.lock_program_funds(&initial_amount);
+    }
+
+    (client, admin, token_client, token_admin_client)
+}
+
+/// CB-1: circuit starts in Closed state.
+#[test]
+fn test_circuit_breaker_initial_state_is_closed() {
+    let env = Env::default();
+    let (client, _admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+    let status = client.get_circuit_status();
+    assert_eq!(
+        status.state,
+        crate::error_recovery::CircuitState::Closed,
+        "circuit must start Closed"
+    );
+    assert_eq!(status.failure_count, 0);
+}
+
+/// CB-2: circuit opens after failure_threshold consecutive failures.
+#[test]
+fn test_circuit_breaker_opens_after_threshold_failures() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    // Set threshold to 2 for fast testing.
+    client.configure_circuit_breaker(&admin, &2, &1, &10);
+
+    // Record 2 failures directly via the module.
+    let program_id = String::from_str(&env, "cb-test");
+    let op = soroban_sdk::symbol_short!("test");
+    env.as_contract(&client.address, || {
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+    });
+
+    let status = client.get_circuit_status();
+    assert_eq!(
+        status.state,
+        crate::error_recovery::CircuitState::Open,
+        "circuit must be Open after threshold failures"
+    );
+}
+
+/// CB-3: open circuit rejects single_payout.
+#[test]
+#[should_panic(expected = "Circuit breaker is OPEN")]
+fn test_circuit_breaker_open_rejects_single_payout() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 10_000);
+
+    // Emergency-open the circuit.
+    client.emergency_open_circuit(&admin);
+
+    let recipient = Address::generate(&env);
+    client.single_payout(&recipient, &1_000); // must panic
+}
+
+/// CB-4: open circuit rejects batch_payout.
+#[test]
+#[should_panic(expected = "Circuit breaker is OPEN")]
+fn test_circuit_breaker_open_rejects_batch_payout() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 10_000);
+
+    client.emergency_open_circuit(&admin);
+
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+    client.batch_payout(
+        &soroban_sdk::vec![&env, r1, r2],
+        &soroban_sdk::vec![&env, 1_000i128, 2_000i128],
+    );
+}
+
+/// CB-5: admin can reset Open → HalfOpen.
+#[test]
+fn test_circuit_breaker_admin_reset_open_to_halfopen() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    client.emergency_open_circuit(&admin);
+    assert_eq!(
+        client.get_circuit_status().state,
+        crate::error_recovery::CircuitState::Open
+    );
+
+    client.reset_circuit_breaker(&admin);
+    assert_eq!(
+        client.get_circuit_status().state,
+        crate::error_recovery::CircuitState::HalfOpen,
+        "reset from Open must go to HalfOpen"
+    );
+}
+
+/// CB-6: admin can reset HalfOpen → Closed.
+#[test]
+fn test_circuit_breaker_admin_reset_halfopen_to_closed() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    client.emergency_open_circuit(&admin);
+    client.reset_circuit_breaker(&admin); // Open → HalfOpen
+    client.reset_circuit_breaker(&admin); // HalfOpen → Closed
+
+    assert_eq!(
+        client.get_circuit_status().state,
+        crate::error_recovery::CircuitState::Closed,
+        "second reset must close the circuit"
+    );
+}
+
+/// CB-7: successful payout in Closed state keeps circuit Closed.
+#[test]
+fn test_circuit_breaker_successful_payout_keeps_closed() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_with_circuit(&env, 5_000);
+    let recipient = Address::generate(&env);
+
+    client.single_payout(&recipient, &1_000);
+
+    assert_eq!(
+        client.get_circuit_status().state,
+        crate::error_recovery::CircuitState::Closed
+    );
+    assert_eq!(token_client.balance(&recipient), 1_000);
+}
+
+/// CB-8: emergency_open_circuit emits an audit event.
+#[test]
+fn test_circuit_breaker_emergency_open_emits_event() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    let before = env.events().all().len();
+    client.emergency_open_circuit(&admin);
+    assert!(
+        env.events().all().len() > before,
+        "emergency_open_circuit must emit an event"
+    );
+}
+
+/// CB-9: get_circuit_status reflects failure count accurately.
+#[test]
+fn test_circuit_breaker_status_reflects_failure_count() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    client.configure_circuit_breaker(&admin, &5, &1, &10);
+
+    let program_id = String::from_str(&env, "cb-test");
+    let op = soroban_sdk::symbol_short!("test");
+    env.as_contract(&client.address, || {
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+    });
+
+    let status = client.get_circuit_status();
+    assert_eq!(status.failure_count, 3);
+    assert_eq!(
+        status.state,
+        crate::error_recovery::CircuitState::Closed,
+        "circuit still Closed below threshold of 5"
+    );
+}
+
+/// CB-10: upgrade-safe schema version is written on init.
+#[test]
+fn test_circuit_breaker_schema_version_written_on_init() {
+    let env = Env::default();
+    let (client, _admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+    let version = client.get_circuit_breaker_schema_version();
+    assert_eq!(version, 1u32, "schema version must be 1 after init");
+}
+
+/// CB-11: init_threshold_monitoring initializes with default config.
+#[test]
+fn test_circuit_breaker_threshold_monitoring_init() {
+    let env = Env::default();
+    let (client, _admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+    client.init_threshold_monitoring();
+    let config = client.get_threshold_config();
+    assert_eq!(config.failure_rate_threshold, 10);
+    assert!(config.outflow_volume_threshold > 0);
+    assert!(config.time_window_secs > 0);
+}
+
+/// CB-12: error log is populated after failures.
+#[test]
+fn test_circuit_breaker_error_log_populated() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+    client.configure_circuit_breaker(&admin, &10, &1, &5);
+
+    let program_id = String::from_str(&env, "cb-test");
+    let op = soroban_sdk::symbol_short!("test");
+    env.as_contract(&client.address, || {
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1002);
+        crate::error_recovery::record_failure(&env, program_id.clone(), op.clone(), 1003);
+    });
+
+    let log = client.get_circuit_error_log();
+    assert_eq!(log.len(), 2, "error log must have 2 entries");
+}
+
+/// CB-13: non-admin cannot emergency-open circuit.
+#[test]
+#[should_panic]
+fn test_circuit_breaker_non_admin_cannot_emergency_open() {
+    let env = Env::default();
+    let (client, _admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+    let non_admin = Address::generate(&env);
+    client.emergency_open_circuit(&non_admin);
+}
+
+/// CB-14: circuit resets failure count to 0 after close.
+#[test]
+fn test_circuit_breaker_failure_count_reset_on_close() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    client.emergency_open_circuit(&admin);
+    client.reset_circuit_breaker(&admin); // Open → HalfOpen
+    client.reset_circuit_breaker(&admin); // HalfOpen → Closed
+
+    let status = client.get_circuit_status();
+    assert_eq!(status.failure_count, 0, "failure count must be 0 after close");
+    assert_eq!(status.state, crate::error_recovery::CircuitState::Closed);
+}
+
+/// CB-15: configure_circuit_breaker updates thresholds.
+#[test]
+fn test_circuit_breaker_configure_updates_thresholds() {
+    let env = Env::default();
+    let (client, admin, _token, _token_admin) = setup_with_circuit(&env, 0);
+
+    client.configure_circuit_breaker(&admin, &7, &2, &20);
+
+    let status = client.get_circuit_status();
+    assert_eq!(status.failure_threshold, 7);
+    assert_eq!(status.success_threshold, 2);
+}

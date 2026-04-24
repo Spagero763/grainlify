@@ -3,7 +3,7 @@
   "contract_name": "ProgramEscrowContract",
   "contract_purpose": "Handles hackathon and program prize pools with batch payouts, dependency management, circuit breaker protection, and comprehensive monitoring",
   "version": {
-    "current": "2.0.0",
+    "current": "2.4.0",
     "schema": "1.0.0",
     "history": [
       {
@@ -45,6 +45,21 @@
           "Hardened history pagination with deterministic limit validation and explicit range errors",
           "Centralized pagination behavior across payout, schedule, and release history queries",
           "Added upgrade-safe pagination config storage with backward-compatible defaults"
+        ]
+      },
+      {
+        "version": "2.4.0",
+        "release_date": "2026-04-23",
+        "changes": [
+          "Added get_circuit_status view entrypoint returning full CircuitBreakerStatus snapshot",
+          "Added get_circuit_error_log view entrypoint returning last N error log entries",
+          "Added emergency_open_circuit admin entrypoint for immediate circuit halt",
+          "Added init_threshold_monitoring entrypoint for threshold-based circuit breaking",
+          "Added get_threshold_config view entrypoint",
+          "Added get_circuit_breaker_schema_version view entrypoint for upgrade safety",
+          "Added CircuitBreakerSchemaVersion upgrade-safe storage key written on init",
+          "Added CIRCUIT_BREAKER_SCHEMA_VERSION_V1 = 1 constant",
+          "Deterministic enforcement: circuit check runs before balance check in both single_payout and batch_payout"
         ]
       }
     ]
@@ -652,11 +667,11 @@
       },
       {
         "name": "get_circuit_status",
-        "description": "Get circuit breaker status",
+        "description": "Return a full snapshot of the circuit breaker state including failure/success counts, timestamps, and configured thresholds",
         "parameters": [],
         "returns": {
           "type": "CircuitBreakerStatus",
-          "description": "Circuit breaker status"
+          "description": "Circuit breaker status snapshot"
         },
         "authorization": "any",
         "pausable": false,
@@ -664,7 +679,7 @@
       },
       {
         "name": "get_circuit_error_log",
-        "description": "Get circuit breaker error log",
+        "description": "Return the last N circuit breaker error log entries",
         "parameters": [],
         "returns": {
           "type": "Vec<ErrorEntry>",
@@ -676,7 +691,7 @@
       },
       {
         "name": "emergency_open_circuit",
-        "description": "Emergency open circuit (admin only)",
+        "description": "Immediately open the circuit breaker (circuit admin only). Blocks all payouts until reset.",
         "parameters": [
           {
             "name": "admin",
@@ -689,6 +704,42 @@
           "description": "Empty on success"
         },
         "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "init_threshold_monitoring",
+        "description": "Initialize threshold monitoring with default configuration. Idempotent.",
+        "parameters": [],
+        "returns": {
+          "type": "()",
+          "description": "Empty on success"
+        },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_threshold_config",
+        "description": "Return the current threshold monitoring configuration",
+        "parameters": [],
+        "returns": {
+          "type": "ThresholdConfig",
+          "description": "Threshold monitoring configuration"
+        },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "get_circuit_breaker_schema_version",
+        "description": "Return the circuit-breaker storage schema version written during init. Returns 0 on legacy deployments.",
+        "parameters": [],
+        "returns": {
+          "type": "u32",
+          "description": "Schema version (1 = current; 0 = legacy pre-v2.4)"
+        },
+        "authorization": "any",
         "pausable": false,
         "gas_estimate": "low"
       }
@@ -778,6 +829,12 @@
         "type": "instance",
         "description": "History pagination configuration",
         "data_structure": "HistoryPaginationConfig"
+      },
+      {
+        "name": "DataKey::CircuitBreakerSchemaVersion",
+        "type": "instance",
+        "description": "Upgrade-safe version marker for circuit-breaker storage layout. Increment when CircuitBreakerConfig schema changes.",
+        "data_structure": "u32"
       },
       {
         "name": "SCHEDULES",
