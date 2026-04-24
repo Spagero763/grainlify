@@ -163,6 +163,12 @@ const SCHEDULE_RELEASED: Symbol = symbol_short!("SchRel");
 const PROGRAM_DELEGATE_SET: Symbol = symbol_short!("PrgDlgS");
 const PROGRAM_DELEGATE_REVOKED: Symbol = symbol_short!("PrgDlgR");
 const PROGRAM_METADATA_UPDATED: Symbol = symbol_short!("PrgMeta");
+const ADMIN_PROPOSED: Symbol = symbol_short!("AdmProp");
+const ADMIN_ACCEPTED: Symbol = symbol_short!("AdmAcc");
+const ADMIN_ROTATION_CANCELLED: Symbol = symbol_short!("AdmCanc");
+const CONTROLLER_PROPOSED: Symbol = symbol_short!("CtrlProp");
+const CONTROLLER_ACCEPTED: Symbol = symbol_short!("CtrlAcc");
+const CONTROLLER_ROTATION_CANCELLED: Symbol = symbol_short!("CtrlCanc");
 
 // Storage keys
 const PROGRAM_DATA: Symbol = symbol_short!("ProgData");
@@ -410,6 +416,67 @@ pub struct ProgramMetadataUpdatedEvent {
     pub version: u32,
     pub program_id: String,
     pub updated_by: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a new admin is proposed (two-step rotation, step 1).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    pub version: u32,
+    pub proposed_by: Address,
+    pub proposed_admin: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when the proposed admin accepts and becomes the new admin (step 2).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    pub version: u32,
+    pub previous_admin: Address,
+    pub new_admin: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a pending admin rotation is cancelled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRotationCancelledEvent {
+    pub version: u32,
+    pub cancelled_by: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a new controller (authorized_payout_key) is proposed for a program (step 1).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControllerProposedEvent {
+    pub version: u32,
+    pub program_id: String,
+    pub proposed_by: Address,
+    pub proposed_controller: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when the proposed controller accepts (step 2).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControllerAcceptedEvent {
+    pub version: u32,
+    pub program_id: String,
+    pub previous_controller: Address,
+    pub new_controller: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when a pending controller rotation is cancelled.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControllerRotationCancelledEvent {
+    pub version: u32,
+    pub program_id: String,
+    pub cancelled_by: Address,
     pub timestamp: u64,
 }
 
@@ -2236,6 +2303,66 @@ impl ProgramEscrowContract {
         env.storage().instance().get(&DataKey::Admin)
     }
 
+    /// Propose a new admin (two-step rotation, step 1).
+    /// Current admin must authorize. Panics if a rotation is already pending.
+    pub fn propose_admin(env: Env, proposed_admin: Address) {
+        let current_admin = Self::require_admin(&env);
+        if env.storage().instance().has(&DataKey::PendingAdmin) {
+            panic!("Admin rotation already pending");
+        }
+        env.storage().instance().set(&DataKey::PendingAdmin, &proposed_admin);
+        env.events().publish(
+            (ADMIN_PROPOSED,),
+            AdminProposedEvent {
+                version: EVENT_VERSION_V2,
+                proposed_by: current_admin,
+                proposed_admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Accept the proposed admin role (step 2).
+    /// The proposed admin must authorize. Panics if no rotation is pending.
+    pub fn accept_admin(env: Env) {
+        let proposed: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("No pending admin rotation"));
+        proposed.require_auth();
+        let previous_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &proposed);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (ADMIN_ACCEPTED,),
+            AdminAcceptedEvent {
+                version: EVENT_VERSION_V2,
+                previous_admin,
+                new_admin: proposed,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Cancel a pending admin rotation.
+    /// Current admin must authorize. Panics if no rotation is pending.
+    pub fn cancel_admin_rotation(env: Env) {
+        let current_admin = Self::require_admin(&env);
+        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+            panic!("No pending admin rotation");
+        }
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (ADMIN_ROTATION_CANCELLED,),
+            AdminRotationCancelledEvent {
+                version: EVENT_VERSION_V2,
+                cancelled_by: current_admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
     /// Archive a program (mark as historical/read-only). Admin-only.
     pub fn archive_program(env: Env, program_id: String) {
         Self::require_admin(&env);
@@ -2493,6 +2620,100 @@ impl ProgramEscrowContract {
             },
         );
 
+        program_data
+    }
+
+    /// Propose a new controller (authorized_payout_key) for a program (step 1).
+    /// Current controller or admin must authorize. Panics if a rotation is already pending.
+    pub fn propose_controller(
+        env: Env,
+        program_id: String,
+        caller: Address,
+        proposed_controller: Address,
+    ) -> ProgramData {
+        let program_data = Self::get_program_data_by_id(&env, &program_id);
+        let proposed_by = Self::require_program_owner_or_admin(&env, &program_data, &caller);
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::PendingController(program_id.clone()))
+        {
+            panic!("Controller rotation already pending");
+        }
+        env.storage().instance().set(
+            &DataKey::PendingController(program_id.clone()),
+            &proposed_controller,
+        );
+        env.events().publish(
+            (CONTROLLER_PROPOSED, program_id.clone()),
+            ControllerProposedEvent {
+                version: EVENT_VERSION_V2,
+                program_id,
+                proposed_by,
+                proposed_controller,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        program_data
+    }
+
+    /// Accept the proposed controller role for a program (step 2).
+    /// The proposed controller must authorize. Panics if no rotation is pending.
+    pub fn accept_controller(env: Env, program_id: String) -> ProgramData {
+        let proposed: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingController(program_id.clone()))
+            .unwrap_or_else(|| panic!("No pending controller rotation"));
+        proposed.require_auth();
+        let mut program_data = Self::get_program_data_by_id(&env, &program_id);
+        let previous_controller = program_data.authorized_payout_key.clone();
+        program_data.authorized_payout_key = proposed.clone();
+        Self::store_program_data(&env, &program_id, &program_data);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingController(program_id.clone()));
+        env.events().publish(
+            (CONTROLLER_ACCEPTED, program_id.clone()),
+            ControllerAcceptedEvent {
+                version: EVENT_VERSION_V2,
+                program_id,
+                previous_controller,
+                new_controller: proposed,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+        program_data
+    }
+
+    /// Cancel a pending controller rotation for a program.
+    /// Current controller or admin must authorize. Panics if no rotation is pending.
+    pub fn cancel_controller_rotation(
+        env: Env,
+        program_id: String,
+        caller: Address,
+    ) -> ProgramData {
+        let program_data = Self::get_program_data_by_id(&env, &program_id);
+        let cancelled_by = Self::require_program_owner_or_admin(&env, &program_data, &caller);
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::PendingController(program_id.clone()))
+        {
+            panic!("No pending controller rotation");
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingController(program_id.clone()));
+        env.events().publish(
+            (CONTROLLER_ROTATION_CANCELLED, program_id.clone()),
+            ControllerRotationCancelledEvent {
+                version: EVENT_VERSION_V2,
+                program_id,
+                cancelled_by,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         program_data
     }
 

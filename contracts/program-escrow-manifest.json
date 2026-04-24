@@ -948,6 +948,99 @@
         "gas_estimate": "low"
       },
       {
+        "name": "propose_admin",
+        "description": "Propose a new admin (two-step rotation step 1). Current admin must authorize. Panics if a rotation is already pending.",
+        "parameters": [
+          {
+            "name": "proposed_admin",
+            "type": "Address",
+            "description": "Address being proposed as the next admin"
+          }
+        ],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "accept_admin",
+        "description": "Accept the proposed admin role (step 2). Proposed admin must authorize. Panics if no rotation is pending.",
+        "parameters": [],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "proposed_admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "cancel_admin_rotation",
+        "description": "Cancel a pending admin rotation. Current admin must authorize. Panics if no rotation is pending.",
+        "parameters": [],
+        "returns": { "type": "()", "description": "Empty on success" },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "propose_controller",
+        "description": "Propose a new authorized_payout_key for a program (step 1). Current controller or admin must authorize. Panics if a rotation is already pending.",
+        "parameters": [
+          {
+            "name": "program_id",
+            "type": "String",
+            "description": "Program identifier"
+          },
+          {
+            "name": "caller",
+            "type": "Address",
+            "description": "Current controller or admin"
+          },
+          {
+            "name": "proposed_controller",
+            "type": "Address",
+            "description": "Address being proposed as the next controller"
+          }
+        ],
+        "returns": { "type": "ProgramData", "description": "Current program data" },
+        "authorization": "controller_or_admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "accept_controller",
+        "description": "Accept the proposed controller role for a program (step 2). Proposed controller must authorize. Panics if no rotation is pending.",
+        "parameters": [
+          {
+            "name": "program_id",
+            "type": "String",
+            "description": "Program identifier"
+          }
+        ],
+        "returns": { "type": "ProgramData", "description": "Updated program data with new controller" },
+        "authorization": "proposed_controller",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "cancel_controller_rotation",
+        "description": "Cancel a pending controller rotation. Current controller or admin must authorize. Panics if no rotation is pending.",
+        "parameters": [
+          {
+            "name": "program_id",
+            "type": "String",
+            "description": "Program identifier"
+          },
+          {
+            "name": "caller",
+            "type": "Address",
+            "description": "Current controller or admin"
+          }
+        ],
+        "returns": { "type": "ProgramData", "description": "Current program data" },
+        "authorization": "controller_or_admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
         "name": "set_circuit_admin",
         "description": "Set circuit breaker admin",
         "parameters": [
@@ -1149,6 +1242,18 @@
         "name": "DataKey::Admin",
         "type": "instance",
         "description": "Contract admin address",
+        "data_structure": "Address"
+      },
+      {
+        "name": "DataKey::PendingAdmin",
+        "type": "instance",
+        "description": "Proposed next admin address for two-step rotation. Present only while a rotation is in progress; removed on accept or cancel.",
+        "data_structure": "Address"
+      },
+      {
+        "name": "DataKey::PendingController(String)",
+        "type": "instance",
+        "description": "Proposed next authorized_payout_key for a program. Key is program_id. Present only while a rotation is in progress; removed on accept or cancel.",
         "data_structure": "Address"
       },
       {
