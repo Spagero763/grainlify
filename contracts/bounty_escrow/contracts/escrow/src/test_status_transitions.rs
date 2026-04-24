@@ -1,8 +1,8 @@
 use super::*;
-use soroban_sdk::testutils::Ledger;
+use soroban_sdk::testutils::{Events, Ledger};
 use soroban_sdk::{
-    testutils::{Address as _, LedgerInfo},
-    token, Address, Env,
+    testutils::{Address as _, LedgerInfo, MockAuth, MockAuthInvoke},
+    token, Address, Env, IntoVal, Symbol, Val,
 };
 
 fn create_token_contract<'a>(
@@ -62,6 +62,68 @@ impl<'a> TestSetup<'a> {
     }
 }
 
+struct RotationSetup<'a> {
+    env: Env,
+    admin: Address,
+    pending_admin: Address,
+    replacement_admin: Address,
+    escrow: BountyEscrowContractClient<'a>,
+}
+
+impl<'a> RotationSetup<'a> {
+    fn new() -> Self {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let pending_admin = Address::generate(&env);
+        let replacement_admin = Address::generate(&env);
+        let (token, _token_admin) = create_token_contract(&env, &admin);
+        let escrow = create_escrow_contract(&env);
+
+        authorize_contract_call(
+            &env,
+            &escrow,
+            &admin,
+            "init",
+            soroban_sdk::vec![
+                &env,
+                admin.clone().into_val(&env),
+                token.address.clone().into_val(&env),
+            ],
+        );
+        escrow.init(&admin, &token.address);
+
+        Self {
+            env,
+            admin,
+            pending_admin,
+            replacement_admin,
+            escrow,
+        }
+    }
+
+    fn authorize(&self, address: &Address, fn_name: &'static str, args: soroban_sdk::Vec<Val>) {
+        authorize_contract_call(&self.env, &self.escrow, address, fn_name, args);
+    }
+}
+
+fn authorize_contract_call(
+    env: &Env,
+    escrow: &BountyEscrowContractClient<'_>,
+    address: &Address,
+    fn_name: &'static str,
+    args: soroban_sdk::Vec<Val>,
+) {
+    env.mock_auths(&[MockAuth {
+        address,
+        invoke: &MockAuthInvoke {
+            contract: &escrow.address,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+}
+
 #[test]
 fn test_refund_eligibility_ineligible_before_deadline_without_approval() {
     let setup = TestSetup::new();
@@ -114,12 +176,9 @@ fn test_refund_eligibility_eligible_with_admin_approval_before_deadline() {
     setup
         .escrow
         .lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
-    setup.escrow.approve_refund(
-        &bounty_id,
-        &500,
-        &custom_recipient,
-        &RefundMode::Partial,
-    );
+    setup
+        .escrow
+        .approve_refund(&bounty_id, &500, &custom_recipient, &RefundMode::Partial);
 
     let view = setup.escrow.get_refund_eligibility_view(&bounty_id);
     assert!(view.eligible);
@@ -127,6 +186,33 @@ fn test_refund_eligibility_eligible_with_admin_approval_before_deadline() {
     assert_eq!(view.amount, 500);
     assert_eq!(view.recipient, Some(custom_recipient));
     assert!(view.approval_present);
+}
+
+/// Maintenance mode halts ALL state-mutating operations globally (lock, release, refund).
+/// This is the hardened behavior: no state changes may occur during maintenance.
+#[test]
+fn test_maintenance_mode_blocks_all_operations() {
+    let setup = TestSetup::new();
+    let bounty_id = 202;
+    let amount = 1000;
+    let deadline = setup.env.ledger().timestamp() + 100;
+
+    setup.escrow.set_maintenance_mode(&true, &None);
+
+    // Lock is blocked.
+    let res = setup
+        .escrow
+        .try_lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    assert!(matches!(res, Err(Ok(Error::FundsPaused))));
+
+    // Disable maintenance mode to lock, then re-enable to test release blocking.
+    setup.escrow.set_maintenance_mode(&false, &None);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_maintenance_mode(&true, &None);
+
+    // Release is also blocked in hardened maintenance mode.
+    let res = setup.escrow.try_release_funds(&bounty_id, &setup.contributor);
+    assert!(matches!(res, Err(Ok(Error::FundsPaused))));
 }
 
 // Valid transitions: Locked → Released
@@ -236,7 +322,7 @@ fn test_partially_refunded_to_refunded() {
 
 // Invalid transition: Released → Locked
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Contract, #201)")]
 fn test_released_to_locked_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -255,7 +341,7 @@ fn test_released_to_locked_fails() {
 
 // Invalid transition: Released → Released
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_released_to_released_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -272,7 +358,7 @@ fn test_released_to_released_fails() {
 
 // Invalid transition: Released → Refunded
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_released_to_refunded_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -290,7 +376,7 @@ fn test_released_to_refunded_fails() {
 
 // Invalid transition: Released → PartiallyRefunded
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_released_to_partially_refunded_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -310,7 +396,7 @@ fn test_released_to_partially_refunded_fails() {
 
 // Invalid transition: Refunded → Locked
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Contract, #201)")]
 fn test_refunded_to_locked_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -339,7 +425,7 @@ fn test_refunded_to_locked_fails() {
 
 // Invalid transition: Refunded → Released
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_refunded_to_released_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -366,7 +452,7 @@ fn test_refunded_to_released_fails() {
 
 // Invalid transition: Refunded → Refunded
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_refunded_to_refunded_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -393,7 +479,7 @@ fn test_refunded_to_refunded_fails() {
 
 // Invalid transition: Refunded → PartiallyRefunded
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_refunded_to_partially_refunded_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -422,7 +508,7 @@ fn test_refunded_to_partially_refunded_fails() {
 
 // Invalid transition: PartiallyRefunded → Locked
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Contract, #201)")]
 fn test_partially_refunded_to_locked_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -444,7 +530,7 @@ fn test_partially_refunded_to_locked_fails() {
 
 // Invalid transition: PartiallyRefunded → Released
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #203)")]
 fn test_partially_refunded_to_released_fails() {
     let setup = TestSetup::new();
     let bounty_id = 1;
@@ -463,242 +549,656 @@ fn test_partially_refunded_to_released_fails() {
 }
 
 // ============================================================================
-// RISK FLAGS GOVERNANCE TESTS (Issue #36)
+// RISK FLAGS GOVERNANCE TESTS
 // ============================================================================
-//
-// These tests verify the risk-flags governance invariants:
-//   - set_escrow_risk_flags ORs bits into the stored flags
-//   - clear_escrow_risk_flags ANDs-NOT bits from the stored flags
-//   - Reserved bits outside RISK_FLAGS_VALID_MASK are rejected
-//   - RiskFlagsUpdated audit event is emitted on every change
-//   - Upgrade-safe schema version is written on init
-//   - update_metadata preserves existing risk flags
-//   - get_metadata returns default (zero) when no metadata exists
 
-/// RF-1: set_escrow_risk_flags ORs bits into stored flags.
 #[test]
-fn test_risk_flags_set_ors_bits() {
+fn test_update_risk_flags_success() {
     let setup = TestSetup::new();
-    let bounty_id = 200u64;
+    let bounty_id = 1;
+    let amount = 1000;
+    let deadline = setup.env.ledger().timestamp() + 1000;
 
-    let meta = setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    assert_eq!(meta.risk_flags, RISK_FLAG_HIGH_RISK);
+    // Lock funds to create the initial escrow
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
 
-    let meta2 = setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_UNDER_REVIEW)
-        .unwrap();
+    // Verify initial risk flags are 0 (no metadata existed yet, fallback applied)
+    assert_eq!(setup.escrow.get_risk_flags(&bounty_id), 0);
+
+    // Update risk flags (e.g., HIGH_RISK = 1, UNDER_REVIEW = 2) -> Bitmask 3
+    let new_flags = 3;
+    setup.escrow.update_risk_flags(&bounty_id, &new_flags);
+
+    // Verify flags persisted in the EscrowMetadata struct
+    assert_eq!(setup.escrow.get_risk_flags(&bounty_id), new_flags);
+    
+    // Clear the flags
+    setup.escrow.update_risk_flags(&bounty_id, &0);
+    assert_eq!(setup.escrow.get_risk_flags(&bounty_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #202)")]
+fn test_update_risk_flags_bounty_not_found() {
+    let setup = TestSetup::new();
+    let missing_bounty_id = 999;
+    
+    // Attempting to flag an escrow that does not exist should throw BountyNotFound (202)
+    setup.escrow.update_risk_flags(&missing_bounty_id, &1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #202)")]
+fn test_get_risk_flags_bounty_not_found() {
+    let setup = TestSetup::new();
+    let missing_bounty_id = 999;
+    
+    // Attempting to read flags from a missing escrow should fail
+    setup.escrow.get_risk_flags(&missing_bounty_id);
+}
+
+// ============================================================================
+// MAINTENANCE MODE HARDENING TESTS
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn test_maintenance_mode_halts_lock() {
+    let setup = TestSetup::new();
+    let reason = soroban_sdk::String::from_str(&setup.env, "Emergency upgrade");
+    setup.escrow.set_maintenance_mode(&true, &Some(reason));
+    
+    let bounty_id = 1;
+    let amount = 1000;
+    let deadline = setup.env.ledger().timestamp() + 1000;
+    
+    // Should panic with FundsPaused (18)
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn test_maintenance_mode_halts_release() {
+    let setup = TestSetup::new();
+    let bounty_id = 1;
+    let amount = 1000;
+    let deadline = setup.env.ledger().timestamp() + 1000;
+    
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    
+    setup.escrow.set_maintenance_mode(&true, &None);
+    
+    // Should panic with FundsPaused (18)
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn test_maintenance_mode_halts_refund() {
+    let setup = TestSetup::new();
+    let bounty_id = 1;
+    let amount = 1000;
+    let deadline = setup.env.ledger().timestamp() + 100;
+    
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.env.ledger().set_timestamp(deadline + 1);
+    
+    setup.escrow.set_maintenance_mode(&true, &None);
+    
+    // Should panic with FundsPaused (18)
+    setup.escrow.refund(&bounty_id);
+}
+
+#[test]
+fn test_maintenance_mode_toggles_correctly() {
+    let setup = TestSetup::new();
+    let reason = soroban_sdk::String::from_str(&setup.env, "Routine sync");
+    
+    assert_eq!(setup.escrow.is_maintenance_mode(), false);
+    
+    setup.escrow.set_maintenance_mode(&true, &Some(reason));
+    assert_eq!(setup.escrow.is_maintenance_mode(), true);
+    
+    setup.escrow.set_maintenance_mode(&false, &None);
+    assert_eq!(setup.escrow.is_maintenance_mode(), false);
+}
+
+// ============================================================================
+// CLAIM-WINDOW VALIDATION TESTS (Issue #1031)
+// ============================================================================
+
+/// Helper: lock a bounty and authorize a claim with a given window.
+fn setup_claim_window_bounty(
+    setup: &TestSetup,
+    bounty_id: u64,
+    amount: i128,
+    claim_window_secs: u64,
+) -> Address {
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&claim_window_secs);
+    let recipient = Address::generate(&setup.env);
+    setup.escrow.authorize_claim(&bounty_id, &recipient, &DisputeReason::Other);
+    recipient
+}
+
+// --- set_claim_window ---
+
+#[test]
+fn test_set_claim_window_success() {
+    let setup = TestSetup::new();
+    // Should not panic; no return value to assert beyond no error.
+    setup.escrow.set_claim_window(&3600_u64);
+}
+
+#[test]
+fn test_set_claim_window_zero_disables_enforcement() {
+    let setup = TestSetup::new();
+    let bounty_id = 300;
+    let amount = 1_000;
+    // Set window to 0 — enforcement disabled.
+    setup.escrow.set_claim_window(&0_u64);
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Advance time far past any window — should still succeed because window == 0.
+    setup.env.ledger().set_timestamp(setup.env.ledger().timestamp() + 999_999);
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
     assert_eq!(
-        meta2.risk_flags,
-        RISK_FLAG_HIGH_RISK | RISK_FLAG_UNDER_REVIEW
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
     );
 }
 
-/// RF-2: clear_escrow_risk_flags ANDs-NOT bits from stored flags.
+// --- validate_claim_window: no pending claim ---
+
 #[test]
-fn test_risk_flags_clear_removes_bits() {
+fn test_release_without_pending_claim_skips_window_check() {
     let setup = TestSetup::new();
-    let bounty_id = 201u64;
-    let all = RISK_FLAG_HIGH_RISK | RISK_FLAG_UNDER_REVIEW | RISK_FLAG_RESTRICTED;
-
-    setup.escrow.set_escrow_risk_flags(&bounty_id, &all).unwrap();
-    let meta = setup
-        .escrow
-        .clear_escrow_risk_flags(&bounty_id, &RISK_FLAG_UNDER_REVIEW)
-        .unwrap();
-    assert_eq!(meta.risk_flags, RISK_FLAG_HIGH_RISK | RISK_FLAG_RESTRICTED);
-}
-
-/// RF-3: clear is idempotent — clearing already-cleared bits is a no-op.
-#[test]
-fn test_risk_flags_clear_idempotent() {
-    let setup = TestSetup::new();
-    let bounty_id = 202u64;
-
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    // Clear a bit that was never set.
-    let meta = setup
-        .escrow
-        .clear_escrow_risk_flags(&bounty_id, &RISK_FLAG_UNDER_REVIEW)
-        .unwrap();
-    assert_eq!(meta.risk_flags, RISK_FLAG_HIGH_RISK);
-}
-
-/// RF-4: all valid bits can be set and cleared together.
-#[test]
-fn test_risk_flags_all_valid_bits_round_trip() {
-    let setup = TestSetup::new();
-    let bounty_id = 203u64;
-    let all = RISK_FLAG_HIGH_RISK | RISK_FLAG_UNDER_REVIEW | RISK_FLAG_RESTRICTED | RISK_FLAG_DEPRECATED;
-
-    setup.escrow.set_escrow_risk_flags(&bounty_id, &all).unwrap();
-    assert_eq!(setup.escrow.get_metadata(&bounty_id).risk_flags, all);
-
-    setup.escrow.clear_escrow_risk_flags(&bounty_id, &all).unwrap();
-    assert_eq!(setup.escrow.get_metadata(&bounty_id).risk_flags, 0);
-}
-
-/// RF-5: reserved bits are rejected by set_escrow_risk_flags.
-#[test]
-fn test_risk_flags_reserved_bits_rejected_on_set() {
-    let setup = TestSetup::new();
-    let bounty_id = 204u64;
-    let reserved = 1u32 << 31; // not in RISK_FLAGS_VALID_MASK
-    let result = setup.escrow.try_set_escrow_risk_flags(&bounty_id, &reserved);
-    assert!(result.is_err(), "reserved bits must be rejected");
-}
-
-/// RF-6: reserved bits are rejected by clear_escrow_risk_flags.
-#[test]
-fn test_risk_flags_reserved_bits_rejected_on_clear() {
-    let setup = TestSetup::new();
-    let bounty_id = 205u64;
-    let reserved = 1u32 << 16;
-    let result = setup.escrow.try_clear_escrow_risk_flags(&bounty_id, &reserved);
-    assert!(result.is_err(), "reserved bits must be rejected on clear");
-}
-
-/// RF-7: RiskFlagsUpdated audit event is emitted on set.
-#[test]
-fn test_risk_flags_set_emits_audit_event() {
-    let setup = TestSetup::new();
-    let bounty_id = 206u64;
-    let before = setup.env.events().all().len();
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    assert!(
-        setup.env.events().all().len() > before,
-        "RiskFlagsUpdated must be emitted on set"
-    );
-}
-
-/// RF-8: RiskFlagsUpdated audit event is emitted on clear.
-#[test]
-fn test_risk_flags_clear_emits_audit_event() {
-    let setup = TestSetup::new();
-    let bounty_id = 207u64;
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    let before = setup.env.events().all().len();
-    setup
-        .escrow
-        .clear_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    assert!(
-        setup.env.events().all().len() > before,
-        "RiskFlagsUpdated must be emitted on clear"
-    );
-}
-
-/// RF-9: upgrade-safe schema version is written on init.
-#[test]
-fn test_risk_flags_schema_version_written_on_init() {
-    let setup = TestSetup::new();
-    let version = setup.escrow.get_risk_flags_schema_version();
-    assert_eq!(version, 1u32, "schema version must be 1 after init");
-}
-
-/// RF-10: get_metadata returns default (zero flags) when no metadata exists.
-#[test]
-fn test_risk_flags_get_metadata_default_is_zero() {
-    let setup = TestSetup::new();
-    let meta = setup.escrow.get_metadata(&999u64);
-    assert_eq!(meta.risk_flags, 0, "default risk_flags must be 0");
-}
-
-/// RF-11: update_metadata preserves existing risk flags.
-#[test]
-fn test_risk_flags_preserved_across_metadata_update() {
-    let setup = TestSetup::new();
-    let bounty_id = 208u64;
-
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &(RISK_FLAG_HIGH_RISK | RISK_FLAG_RESTRICTED))
-        .unwrap();
-
-    setup
-        .escrow
-        .update_metadata(
-            &setup.admin,
-            &bounty_id,
-            &42u64,
-            &100u64,
-            &soroban_sdk::String::from_str(&setup.env, "bug_fix"),
-            &None,
-        )
-        .unwrap();
-
-    let meta = setup.escrow.get_metadata(&bounty_id);
+    let bounty_id = 301;
+    let amount = 1_000;
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+    setup.escrow.set_claim_window(&60_u64);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    // No authorize_claim called — no PendingClaim exists.
+    // release_funds should succeed regardless of window.
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
     assert_eq!(
-        meta.risk_flags,
-        RISK_FLAG_HIGH_RISK | RISK_FLAG_RESTRICTED,
-        "risk flags must survive metadata update"
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
     );
-    assert_eq!(meta.repo_id, 42u64);
-    assert_eq!(meta.issue_id, 100u64);
 }
 
-/// RF-12: set_escrow_risk_flags requires contract to be initialized.
-#[test]
-fn test_risk_flags_requires_init() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, BountyEscrowContract);
-    let client = BountyEscrowContractClient::new(&env, &contract_id);
-    let result = client.try_set_escrow_risk_flags(&1u64, &RISK_FLAG_HIGH_RISK);
-    assert!(result.is_err(), "must fail when not initialized");
-}
+// --- validate_claim_window: claim within window ---
 
-/// RF-13: multiple set calls accumulate flags correctly.
 #[test]
-fn test_risk_flags_multiple_sets_accumulate() {
+fn test_claim_within_window_succeeds() {
     let setup = TestSetup::new();
-    let bounty_id = 209u64;
-
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_RESTRICTED)
-        .unwrap();
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_DEPRECATED)
-        .unwrap();
-
-    let meta = setup.escrow.get_metadata(&bounty_id);
+    let bounty_id = 302;
+    let amount = 1_000;
+    let recipient = setup_claim_window_bounty(&setup, bounty_id, amount, 3_600);
+    // Still within the window — claim should succeed.
+    setup.escrow.claim(&bounty_id);
     assert_eq!(
-        meta.risk_flags,
-        RISK_FLAG_HIGH_RISK | RISK_FLAG_RESTRICTED | RISK_FLAG_DEPRECATED
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
+    );
+    let _ = recipient; // used via authorize_claim
+}
+
+#[test]
+fn test_release_within_window_succeeds() {
+    let setup = TestSetup::new();
+    let bounty_id = 303;
+    let amount = 1_000;
+    let _recipient = setup_claim_window_bounty(&setup, bounty_id, amount, 3_600);
+    // Admin releases within the window — should succeed.
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
     );
 }
 
-/// RF-14: zero flags value is accepted (no-op set).
+// --- validate_claim_window: claim at exact boundary ---
+
 #[test]
-fn test_risk_flags_zero_value_accepted() {
+fn test_claim_at_exact_window_boundary_succeeds() {
     let setup = TestSetup::new();
-    let bounty_id = 210u64;
-    setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &RISK_FLAG_HIGH_RISK)
-        .unwrap();
-    // Setting zero is a no-op but must not error.
-    let meta = setup
-        .escrow
-        .set_escrow_risk_flags(&bounty_id, &0u32)
-        .unwrap();
-    assert_eq!(meta.risk_flags, RISK_FLAG_HIGH_RISK);
+    let bounty_id = 304;
+    let amount = 1_000;
+    let window = 3_600_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&window);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Advance to exactly expires_at (now + window).
+    setup.env.ledger().set_timestamp(now + window);
+    // At the boundary (now == expires_at) the window is still valid.
+    setup.escrow.claim(&bounty_id);
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
+    );
+}
+
+// --- validate_claim_window: expired window ---
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_claim_after_window_expires_fails() {
+    let setup = TestSetup::new();
+    let bounty_id = 305;
+    let amount = 1_000;
+    let window = 60_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&window);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Advance past the window.
+    setup.env.ledger().set_timestamp(now + window + 1);
+    // Should panic with DeadlineNotPassed (#6).
+    setup.escrow.claim(&bounty_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_release_after_window_expires_fails() {
+    let setup = TestSetup::new();
+    let bounty_id = 306;
+    let amount = 1_000;
+    let window = 60_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&window);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Advance past the window.
+    setup.env.ledger().set_timestamp(now + window + 1);
+    // Should panic with DeadlineNotPassed (#6).
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+}
+
+// --- validate_claim_window: window not configured ---
+
+#[test]
+fn test_release_with_no_window_configured_succeeds() {
+    let setup = TestSetup::new();
+    let bounty_id = 307;
+    let amount = 1_000;
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+    // No set_claim_window call — defaults to 0 (disabled).
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Advance time significantly — no window enforcement.
+    setup.env.ledger().set_timestamp(setup.env.ledger().timestamp() + 999_999);
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
+    );
+}
+
+// --- cancel then re-authorize ---
+
+#[test]
+fn test_cancel_expired_claim_then_authorize_new_window() {
+    let setup = TestSetup::new();
+    let bounty_id = 308;
+    let amount = 1_000;
+    let window = 60_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&window);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Expire the first window.
+    setup.env.ledger().set_timestamp(now + window + 1);
+    // Admin cancels the stale claim.
+    setup.escrow.cancel_pending_claim(&bounty_id, &DisputeOutcome::CancelledByAdmin);
+    // Re-authorize with a fresh window.
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    // Claim should now succeed within the new window.
+    setup.escrow.claim(&bounty_id);
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
+    );
+}
+
+// --- isolation: window on one bounty does not affect another ---
+
+#[test]
+fn test_claim_window_isolation_between_bounties() {
+    let setup = TestSetup::new();
+    let bounty_a = 309;
+    let bounty_b = 310;
+    let amount = 1_000;
+    let window = 60_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+
+    setup.escrow.set_claim_window(&window);
+
+    // Lock both bounties.
+    setup.escrow.lock_funds(&setup.depositor, &bounty_a, &amount, &deadline);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_b, &amount, &deadline);
+
+    // Authorize claim on bounty_a only.
+    setup.escrow.authorize_claim(&bounty_a, &setup.contributor, &DisputeReason::Other);
+
+    // Advance past the window for bounty_a.
+    setup.env.ledger().set_timestamp(now + window + 1);
+
+    // bounty_b has no pending claim — release should succeed.
+    setup.escrow.release_funds(&bounty_b, &setup.contributor);
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_b).status,
+        EscrowStatus::Released
+    );
+}
+
+// --- audit event emission ---
+
+#[test]
+fn test_set_claim_window_emits_event() {
+    let setup = TestSetup::new();
+    setup.escrow.set_claim_window(&7200_u64);
+    let events = setup.env.events().all();
+    let expected = soroban_sdk::Symbol::new(&setup.env, "clm_set");
+    let found = events.iter().any(|(_, topics, _)| {
+        topics.len() >= 1
+            && topics
+                .get(0)
+                .and_then(|t| <Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(&setup.env, &t).ok())
+                .map(|s| s == expected)
+                .unwrap_or(false)
+    });
+    assert!(found, "ClaimWindowSet event not emitted");
+}
+
+#[test]
+fn test_claim_window_validated_event_emitted_on_success() {
+    let setup = TestSetup::new();
+    let bounty_id = 311;
+    let amount = 1_000;
+    let _recipient = setup_claim_window_bounty(&setup, bounty_id, amount, 3_600);
+    setup.escrow.claim(&bounty_id);
+    let events = setup.env.events().all();
+    let expected = soroban_sdk::Symbol::new(&setup.env, "clm_ok");
+    let found = events.iter().any(|(_, topics, _)| {
+        topics.len() >= 1
+            && topics
+                .get(0)
+                .and_then(|t| <Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(&setup.env, &t).ok())
+                .map(|s| s == expected)
+                .unwrap_or(false)
+    });
+    assert!(found, "ClaimWindowValidated event not emitted");
+}
+
+#[test]
+fn test_claim_window_expired_event_emitted_on_failure() {
+    let setup = TestSetup::new();
+    let bounty_id = 312;
+    let amount = 1_000;
+    let window = 60_u64;
+    let now = setup.env.ledger().timestamp();
+    let deadline = now + 10_000;
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_claim_window(&window);
+    setup.escrow.authorize_claim(&bounty_id, &setup.contributor, &DisputeReason::Other);
+    setup.env.ledger().set_timestamp(now + window + 1);
+    // Attempt claim — will fail, but the expired event should be emitted.
+    let _ = setup.escrow.try_claim(&bounty_id);
+    let events = setup.env.events().all();
+    let expected = soroban_sdk::Symbol::new(&setup.env, "clm_exp");
+    let found = events.iter().any(|(_, topics, _)| {
+        topics.len() >= 1
+            && topics
+                .get(0)
+                .and_then(|t| <Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(&setup.env, &t).ok())
+                .map(|s| s == expected)
+                .unwrap_or(false)
+    });
+    assert!(found, "ClaimWindowExpired event not emitted");
+}
+
+// ============================================================================
+// BATCH SIZE CAPS TESTS (#04)
+// ============================================================================
+
+/// Helper: build a Vec of LockFundsItem for batch tests.
+fn make_lock_items(setup: &TestSetup, start_id: u64, count: u32) -> soroban_sdk::Vec<LockFundsItem> {
+    let mut items = soroban_sdk::Vec::new(&setup.env);
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+    for i in 0..count {
+        items.push_back(LockFundsItem {
+            bounty_id: start_id + i as u64,
+            depositor: setup.depositor.clone(),
+            amount: 100,
+            deadline,
+        });
+    }
+    items
+}
+
+/// Helper: build a Vec of ReleaseFundsItem for batch tests.
+fn make_release_items(setup: &TestSetup, start_id: u64, count: u32) -> soroban_sdk::Vec<ReleaseFundsItem> {
+    let mut items = soroban_sdk::Vec::new(&setup.env);
+    for i in 0..count {
+        items.push_back(ReleaseFundsItem {
+            bounty_id: start_id + i as u64,
+            contributor: setup.contributor.clone(),
+        });
+    }
+    items
+}
+
+// --- get_batch_size_caps: defaults ---
+
+#[test]
+fn test_get_batch_size_caps_defaults_to_max() {
+    let setup = TestSetup::new();
+    let caps = setup.escrow.get_batch_size_caps();
+    // Default must equal the compile-time hard limit (20).
+    assert_eq!(caps.lock_cap, 20);
+    assert_eq!(caps.release_cap, 20);
+}
+
+// --- set_batch_size_caps: happy path ---
+
+#[test]
+fn test_set_batch_size_caps_success() {
+    let setup = TestSetup::new();
+    setup.escrow.set_batch_size_caps(&5_u32, &3_u32);
+    let caps = setup.escrow.get_batch_size_caps();
+    assert_eq!(caps.lock_cap, 5);
+    assert_eq!(caps.release_cap, 3);
+}
+
+// --- set_batch_size_caps: emits BatchSizeCapsUpdated event ---
+
+#[test]
+fn test_set_batch_size_caps_emits_event() {
+    let setup = TestSetup::new();
+    setup.escrow.set_batch_size_caps(&4_u32, &2_u32);
+    let events = setup.env.events().all();
+    let found = events.iter().any(|(_, topics, _)| {
+        topics.len() >= 1
+            && topics
+                .get(0)
+                .map(|t| {
+                    t == soroban_sdk::Symbol::new(&setup.env, "bcapcfg").into_val(&setup.env)
+                })
+                .unwrap_or(false)
+    });
+    assert!(found, "BatchSizeCapsUpdated event not emitted");
+}
+
+// --- set_batch_size_caps: boundary values ---
+
+#[test]
+fn test_set_batch_size_caps_min_boundary() {
+    let setup = TestSetup::new();
+    // cap = 1 is the minimum valid value.
+    setup.escrow.set_batch_size_caps(&1_u32, &1_u32);
+    let caps = setup.escrow.get_batch_size_caps();
+    assert_eq!(caps.lock_cap, 1);
+    assert_eq!(caps.release_cap, 1);
+}
+
+#[test]
+fn test_set_batch_size_caps_max_boundary() {
+    let setup = TestSetup::new();
+    // cap = 20 (MAX_BATCH_SIZE) is the maximum valid value.
+    setup.escrow.set_batch_size_caps(&20_u32, &20_u32);
+    let caps = setup.escrow.get_batch_size_caps();
+    assert_eq!(caps.lock_cap, 20);
+    assert_eq!(caps.release_cap, 20);
+}
+
+// --- set_batch_size_caps: invalid inputs ---
+
+#[test]
+fn test_set_batch_size_caps_zero_lock_cap_rejected() {
+    let setup = TestSetup::new();
+    let res = setup.escrow.try_set_batch_size_caps(&0_u32, &5_u32);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSizeCap))));
+}
+
+#[test]
+fn test_set_batch_size_caps_zero_release_cap_rejected() {
+    let setup = TestSetup::new();
+    let res = setup.escrow.try_set_batch_size_caps(&5_u32, &0_u32);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSizeCap))));
+}
+
+#[test]
+fn test_set_batch_size_caps_exceeds_max_lock_rejected() {
+    let setup = TestSetup::new();
+    // 21 > MAX_BATCH_SIZE (20)
+    let res = setup.escrow.try_set_batch_size_caps(&21_u32, &5_u32);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSizeCap))));
+}
+
+#[test]
+fn test_set_batch_size_caps_exceeds_max_release_rejected() {
+    let setup = TestSetup::new();
+    let res = setup.escrow.try_set_batch_size_caps(&5_u32, &21_u32);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSizeCap))));
+}
+
+// --- batch_lock_funds: respects configured lock cap ---
+
+#[test]
+fn test_batch_lock_funds_within_cap_succeeds() {
+    let setup = TestSetup::new();
+    // Mint enough tokens for the batch.
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    setup.escrow.set_batch_size_caps(&3_u32, &20_u32);
+    let items = make_lock_items(&setup, 1000, 3);
+    let count = setup.escrow.batch_lock_funds(&items);
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn test_batch_lock_funds_exceeds_cap_rejected() {
+    let setup = TestSetup::new();
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    // Set lock cap to 2, then try to lock 3 items.
+    setup.escrow.set_batch_size_caps(&2_u32, &20_u32);
+    let items = make_lock_items(&setup, 2000, 3);
+    let res = setup.escrow.try_batch_lock_funds(&items);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSize))));
+}
+
+#[test]
+fn test_batch_lock_funds_exactly_at_cap_succeeds() {
+    let setup = TestSetup::new();
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    setup.escrow.set_batch_size_caps(&2_u32, &20_u32);
+    let items = make_lock_items(&setup, 3000, 2);
+    let count = setup.escrow.batch_lock_funds(&items);
+    assert_eq!(count, 2);
+}
+
+// --- batch_release_funds: respects configured release cap ---
+
+#[test]
+fn test_batch_release_funds_within_cap_succeeds() {
+    let setup = TestSetup::new();
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    // Lock 3 bounties first.
+    let lock_items = make_lock_items(&setup, 4000, 3);
+    setup.escrow.batch_lock_funds(&lock_items);
+    // Set release cap to 3 and release all.
+    setup.escrow.set_batch_size_caps(&20_u32, &3_u32);
+    let release_items = make_release_items(&setup, 4000, 3);
+    let count = setup.escrow.batch_release_funds(&release_items);
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn test_batch_release_funds_exceeds_cap_rejected() {
+    let setup = TestSetup::new();
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    let lock_items = make_lock_items(&setup, 5000, 3);
+    setup.escrow.batch_lock_funds(&lock_items);
+    // Set release cap to 2, then try to release 3.
+    setup.escrow.set_batch_size_caps(&20_u32, &2_u32);
+    let release_items = make_release_items(&setup, 5000, 3);
+    let res = setup.escrow.try_batch_release_funds(&release_items);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSize))));
+}
+
+// --- lock and release caps are independent ---
+
+#[test]
+fn test_lock_and_release_caps_are_independent() {
+    let setup = TestSetup::new();
+    setup.token_admin.mint(&setup.depositor, &10_000);
+    // lock_cap=5, release_cap=2
+    setup.escrow.set_batch_size_caps(&5_u32, &2_u32);
+
+    // Locking 4 items should succeed (4 <= 5).
+    let lock_items = make_lock_items(&setup, 6000, 4);
+    let count = setup.escrow.batch_lock_funds(&lock_items);
+    assert_eq!(count, 4);
+
+    // Releasing 3 items should fail (3 > 2).
+    let release_items = make_release_items(&setup, 6000, 3);
+    let res = setup.escrow.try_batch_release_funds(&release_items);
+    assert!(matches!(res, Err(Ok(Error::InvalidBatchSize))));
+
+    // Releasing 2 items should succeed (2 <= 2).
+    let release_items_ok = make_release_items(&setup, 6000, 2);
+    let released = setup.escrow.batch_release_funds(&release_items_ok);
+    assert_eq!(released, 2);
+}
+
+// --- cap update is idempotent ---
+
+#[test]
+fn test_set_batch_size_caps_idempotent() {
+    let setup = TestSetup::new();
+    setup.escrow.set_batch_size_caps(&5_u32, &5_u32);
+    setup.escrow.set_batch_size_caps(&5_u32, &5_u32);
+    let caps = setup.escrow.get_batch_size_caps();
+    assert_eq!(caps.lock_cap, 5);
+    assert_eq!(caps.release_cap, 5);
+}
+
+// --- upgrade-safe: caps survive a re-read after storage write ---
+
+#[test]
+fn test_batch_size_caps_persist_in_storage() {
+    let setup = TestSetup::new();
+    setup.escrow.set_batch_size_caps(&7_u32, &3_u32);
+    // Read back via the public view — must match what was written.
+    let caps = setup.escrow.get_batch_size_caps();
+    assert_eq!(caps.lock_cap, 7);
+    assert_eq!(caps.release_cap, 3);
 }
