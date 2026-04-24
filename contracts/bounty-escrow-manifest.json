@@ -1566,6 +1566,42 @@
           { "name": "timestamp", "type": "u64", "description": "Ledger timestamp" }
         ],
         "trigger": "set_high_value_config called by admin"
+      },
+      {
+        "name": "ClaimWindowSet",
+        "description": "Emitted when the admin sets or updates the global claim-window duration",
+        "topics": ["\"clm_win\""],
+        "data": [
+          { "name": "version", "type": "u32", "description": "Always EVENT_VERSION_V2" },
+          { "name": "claim_window", "type": "u64", "description": "New duration in seconds; 0 disables enforcement" },
+          { "name": "set_by", "type": "Address", "description": "Admin who made the change" },
+          { "name": "timestamp", "type": "u64", "description": "Ledger timestamp" }
+        ],
+        "trigger": "set_claim_window called by admin"
+      },
+      {
+        "name": "ClaimWindowValidated",
+        "description": "Emitted when a claim is accepted as within the active window",
+        "topics": ["\"clm_ok\"", "bounty_id: u64"],
+        "data": [
+          { "name": "version", "type": "u32", "description": "Always EVENT_VERSION_V2" },
+          { "name": "bounty_id", "type": "u64", "description": "Bounty identifier" },
+          { "name": "now", "type": "u64", "description": "Current ledger timestamp" },
+          { "name": "expires_at", "type": "u64", "description": "Timestamp at which the window expires" }
+        ],
+        "trigger": "validate_claim_window succeeds (claim within window)"
+      },
+      {
+        "name": "ClaimWindowExpired",
+        "description": "Emitted when a claim is rejected because the window has expired",
+        "topics": ["\"clm_exp\"", "bounty_id: u64"],
+        "data": [
+          { "name": "version", "type": "u32", "description": "Always EVENT_VERSION_V2" },
+          { "name": "bounty_id", "type": "u64", "description": "Bounty identifier" },
+          { "name": "now", "type": "u64", "description": "Current ledger timestamp" },
+          { "name": "expires_at", "type": "u64", "description": "Timestamp at which the window expired" }
+        ],
+        "trigger": "validate_claim_window called after window expiry"
       }
     ]
   },
