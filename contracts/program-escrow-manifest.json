@@ -267,6 +267,72 @@
         "gas_estimate": "medium"
       },
       {
+        "name": "single_payout_idempotent",
+        "description": "Distribute prize to single winner with idempotency key. Panics with 'Payout already processed' if the key was already used for a successful payout — callers should treat this as a success.",
+        "parameters": [
+          {
+            "name": "idempotency_key",
+            "type": "String",
+            "description": "Caller-supplied opaque string used to deduplicate payout submissions. Must be unique per logical payout."
+          },
+          {
+            "name": "recipient",
+            "type": "Address",
+            "description": "Winner address"
+          },
+          {
+            "name": "amount",
+            "type": "i128",
+            "description": "Prize amount"
+          }
+        ],
+        "returns": {
+          "type": "ProgramData",
+          "description": "Updated program data"
+        },
+        "authorization": "admin",
+        "pausable": true,
+        "gas_estimate": "medium",
+        "security_notes": [
+          "Idempotency check runs before all state reads — duplicate submissions are rejected cheaply.",
+          "Key is stored in persistent storage after all token transfers succeed (CEI ordering).",
+          "Persistent storage ensures keys survive contract upgrades."
+        ]
+      },
+      {
+        "name": "batch_payout_idempotent",
+        "description": "Distribute prizes to multiple winners with idempotency key. Panics with 'Payout already processed' if the key was already used for a successful batch payout.",
+        "parameters": [
+          {
+            "name": "idempotency_key",
+            "type": "String",
+            "description": "Caller-supplied opaque string used to deduplicate batch payout submissions."
+          },
+          {
+            "name": "recipients",
+            "type": "Vec<Address>",
+            "description": "Array of winner addresses"
+          },
+          {
+            "name": "amounts",
+            "type": "Vec<i128>",
+            "description": "Corresponding prize amounts"
+          }
+        ],
+        "returns": {
+          "type": "ProgramData",
+          "description": "Updated program data"
+        },
+        "authorization": "admin",
+        "pausable": true,
+        "gas_estimate": "high",
+        "security_notes": [
+          "Idempotency check runs before all state reads — duplicate submissions are rejected cheaply.",
+          "Key is stored in persistent storage after all token transfers succeed (CEI ordering).",
+          "Persistent storage ensures keys survive contract upgrades."
+        ]
+      },
+      {
         "name": "set_program_spend_threshold",
         "description": "Set per-program maximum spend for a single payout operation (single amount or batch total)",
         "parameters": [
@@ -1108,6 +1174,12 @@
         "type": "instance",
         "description": "Release schedules",
         "data_structure": "Vec<ProgramReleaseSchedule>"
+      },
+      {
+        "name": "DataKey::IdempotencyKey(String)",
+        "type": "persistent",
+        "description": "Idempotency key for payout deduplication. Key is the caller-supplied opaque string; value is bool (true = processed). Stored in persistent storage so it survives contract upgrades.",
+        "data_structure": "bool"
       }
     ]
   },
@@ -1204,6 +1276,12 @@
         "error_code": "DependencyCycle",
         "scenario": "Creating circular dependencies between programs",
         "resolution": "Remove circular dependency references"
+      },
+      {
+        "error_code": "PayoutAlreadyProcessed",
+        "numeric_code": 1100,
+        "scenario": "Submitting a payout with an idempotency key that was already used for a successful payout",
+        "resolution": "Treat as success — the funds were already transferred. Use is_payout_processed to query key status before retrying."
       }
     ],
     "gas_considerations": [
