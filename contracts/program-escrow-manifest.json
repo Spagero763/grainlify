@@ -91,7 +91,12 @@
           "Added query_schedules_by_recipient: paginated release schedules filtered by recipient",
           "Added query_schedules_by_status: paginated release schedules filtered by status",
           "Added query_releases_by_recipient: paginated release history filtered by recipient",
-          "Pagination enforces limit 1\u2013200 via HistoryPaginationConfig with upgrade-safe storage"
+          "Pagination enforces limit 1\u2013200 via HistoryPaginationConfig with upgrade-safe storage",
+          "Implemented batch_lock and batch_release with full atomicity and deterministic ordering",
+          "Hardened batch operations with explicit error handling and reentrancy protection",
+          "Fixed syntax errors in BatchError definition",
+          "Added BatchFundsLocked and BatchFundsReleased audit events",
+          "Enhanced test coverage for batch edge cases"
         ]
       }
     ]
@@ -234,6 +239,42 @@
           "description": "Array of payout records"
         },
         "authorization": "admin",
+        "pausable": true,
+        "gas_estimate": "high"
+      },
+      {
+        "name": "batch_lock",
+        "description": "Atomically lock funds for multiple programs",
+        "parameters": [
+          {
+            "name": "items",
+            "type": "Vec<LockItem>",
+            "description": "Array of lock items (program_id, amount)"
+          }
+        ],
+        "returns": {
+          "type": "u32",
+          "description": "Number of successfully locked items"
+        },
+        "authorization": "signer",
+        "pausable": true,
+        "gas_estimate": "high"
+      },
+      {
+        "name": "batch_release",
+        "description": "Atomically release multiple scheduled payouts",
+        "parameters": [
+          {
+            "name": "items",
+            "type": "Vec<ReleaseItem>",
+            "description": "Array of release items (program_id, schedule_id)"
+          }
+        ],
+        "returns": {
+          "type": "u32",
+          "description": "Number of successfully released payouts"
+        },
+        "authorization": "authorized_payout_key",
         "pausable": true,
         "gas_estimate": "high"
       },
