@@ -210,7 +210,7 @@
       },
       {
         "name": "batch_payout",
-        "description": "Distribute prizes to multiple winners",
+        "description": "Distribute prizes to multiple winners with optional idempotency key for retry safety",
         "parameters": [
           {
             "name": "winners",
@@ -221,6 +221,12 @@
             "name": "amounts",
             "type": "Vec<i128>",
             "description": "Corresponding prize amounts"
+          },
+          {
+            "name": "idempotency_key",
+            "type": "Option<String>",
+            "description": "Optional idempotency key for deterministic retry behavior",
+            "optional": true
           }
         ],
         "returns": {
@@ -233,7 +239,7 @@
       },
       {
         "name": "single_payout",
-        "description": "Distribute prize to single winner",
+        "description": "Distribute prize to single winner with optional idempotency key for retry safety",
         "parameters": [
           {
             "name": "winner",
@@ -244,6 +250,12 @@
             "name": "amount",
             "type": "i128",
             "description": "Prize amount"
+          },
+          {
+            "name": "idempotency_key",
+            "type": "Option<String>",
+            "description": "Optional idempotency key for deterministic retry behavior",
+            "optional": true
           }
         ],
         "returns": {

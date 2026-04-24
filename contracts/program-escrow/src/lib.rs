@@ -602,6 +602,99 @@ pub struct SpendLimitSchemaVersionSet {
     pub timestamp: u64,
 }
 
+// ========================================================================
+// Idempotency Key Types
+// ========================================================================
+
+/// Record of an idempotency key usage for payout operations.
+///
+/// Stores the outcome of a payout operation to ensure deterministic
+/// responses on retry attempts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyRecord {
+    /// The idempotency key that was used
+    pub idempotency_key: String,
+    /// Type of operation that was performed
+    pub operation_type: Symbol,
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// Timestamp when the operation was first executed
+    pub executed_at: u64,
+    /// Address that executed the operation
+    pub executor: Address,
+    /// Program ID for which the operation was performed
+    pub program_id: String,
+    /// Total amount involved in the operation
+    pub total_amount: i128,
+    /// Number of recipients (for batch payouts)
+    pub recipient_count: u32,
+    /// Error code if the operation failed
+    pub error_code: Option<u32>,
+}
+
+/// Event emitted when an idempotency key is first used successfully.
+///
+/// ### Topics
+/// `(IDEMPOTENCY_KEY_USED, idempotency_key)`
+///
+/// ### Security notes
+/// - Emitted **after** the operation succeeds so the event reflects
+///   the completed state.
+/// - Contains operation details for audit trail without exposing
+///   sensitive recipient data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyKeyUsedEvent {
+    pub version: u32,
+    pub idempotency_key: String,
+    pub operation_type: Symbol,
+    pub program_id: String,
+    pub total_amount: i128,
+    pub recipient_count: u32,
+    pub executor: Address,
+    pub executed_at: u64,
+}
+
+/// Event emitted when a retry attempt is made with a used idempotency key.
+///
+/// ### Topics
+/// `(IDEMPOTENCY_KEY_USED, idempotency_key)`
+///
+/// ### Security notes
+/// - Emitted **before** any state changes to prevent duplicate operations.
+/// - Contains the original result for deterministic client responses.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyKeyRetryEvent {
+    pub version: u32,
+    pub idempotency_key: String,
+    pub original_success: bool,
+    pub original_executed_at: u64,
+    pub original_executor: Address,
+    pub retry_attempt_at: u64,
+    pub retry_by: Address,
+}
+
+/// Emitted once during contract initialization to record the idempotency
+/// storage schema version for upgrade-safety tracking.
+///
+/// ### Topics
+/// `(IDEMPOTENCY_SCHEMA,)`
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencySchemaVersionSet {
+    pub version: u32,
+    /// Schema version written to instance storage.
+    pub schema_version: u32,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+}
+
+// Constants for idempotency key validation
+pub const IDEMPOTENCY_KEY_MAX_LENGTH: u32 = 256;
+pub const IDEMPOTENCY_SCHEMA_VERSION_V1: u32 = 1;
+
 // Event symbols for dispute lifecycle
 const DISPUTE_OPENED: Symbol = symbol_short!("DspOpen");
 const DISPUTE_RESOLVED: Symbol = symbol_short!("DspRslv");
@@ -610,6 +703,8 @@ const DISPUTE_RESOLVED: Symbol = symbol_short!("DspRslv");
 const SPEND_LIMIT_SET: Symbol = symbol_short!("SpLimSet");
 const SPEND_LIMIT_EXCEEDED: Symbol = symbol_short!("SpLimExc");
 const SPEND_LIMIT_SCHEMA: Symbol = symbol_short!("SpLimSch");
+const IDEMPOTENCY_SCHEMA: Symbol = symbol_short!("IdempSch");
+const IDEMPOTENCY_KEY_USED: Symbol = symbol_short!("IdempUsed");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TOKEN ALLOWLIST TYPES & EVENTS
@@ -1268,6 +1363,133 @@ impl ProgramEscrowContract {
         id += 1;
         env.storage().instance().set(&RECEIPT_ID, &id);
         id
+    }
+
+    // ========================================================================
+    // Idempotency Key Management
+    // ========================================================================
+
+    /// Validate idempotency key format and constraints
+    fn validate_idempotency_key(idempotency_key: &String) {
+        if idempotency_key.is_empty() {
+            panic!("Idempotency key cannot be empty");
+        }
+        if idempotency_key.len() > IDEMPOTENCY_KEY_MAX_LENGTH as usize {
+            panic!("Idempotency key exceeds maximum length");
+        }
+    }
+
+    /// Check if an idempotency key has been used before
+    fn get_idempotency_record(env: &Env, idempotency_key: &String) -> Option<IdempotencyRecord> {
+        env.storage().instance().get(&DataKey::IdempotencyKey(idempotency_key.clone()))
+    }
+
+    /// Store a new idempotency record for a successful operation
+    fn store_idempotency_record(
+        env: &Env,
+        idempotency_key: String,
+        operation_type: Symbol,
+        program_id: String,
+        total_amount: i128,
+        recipient_count: u32,
+        executor: Address,
+    ) {
+        let record = IdempotencyRecord {
+            idempotency_key: idempotency_key.clone(),
+            operation_type,
+            success: true,
+            executed_at: env.ledger().timestamp(),
+            executor,
+            program_id,
+            total_amount,
+            recipient_count,
+            error_code: None,
+        };
+        
+        env.storage().instance().set(&DataKey::IdempotencyKey(idempotency_key), &record);
+        
+        // Emit idempotency key used event
+        env.events().publish(
+            (IDEMPOTENCY_KEY_USED,),
+            IdempotencyKeyUsedEvent {
+                version: EVENT_VERSION_V2,
+                idempotency_key: record.idempotency_key,
+                operation_type: record.operation_type,
+                program_id: record.program_id,
+                total_amount: record.total_amount,
+                recipient_count: record.recipient_count,
+                executor: record.executor,
+                executed_at: record.executed_at,
+            },
+        );
+    }
+
+    /// Store idempotency record for a failed operation
+    fn store_idempotency_failure(
+        env: &Env,
+        idempotency_key: String,
+        operation_type: Symbol,
+        program_id: String,
+        total_amount: i128,
+        recipient_count: u32,
+        executor: Address,
+        error_code: u32,
+    ) {
+        let record = IdempotencyRecord {
+            idempotency_key: idempotency_key.clone(),
+            operation_type,
+            success: false,
+            executed_at: env.ledger().timestamp(),
+            executor,
+            program_id,
+            total_amount,
+            recipient_count,
+            error_code: Some(error_code),
+        };
+        
+        env.storage().instance().set(&DataKey::IdempotencyKey(idempotency_key), &record);
+    }
+
+    /// Handle idempotency key validation and retry logic
+    fn handle_idempotency(
+        env: &Env,
+        idempotency_key: Option<String>,
+        operation_type: Symbol,
+        program_id: &String,
+        total_amount: i128,
+        recipient_count: u32,
+    ) -> Result<(), IdempotencyRecord> {
+        // If no idempotency key provided, proceed with normal operation
+        let idempotency_key = match idempotency_key {
+            Some(key) => {
+                Self::validate_idempotency_key(&key);
+                key
+            }
+            None => return Ok(()), // No idempotency key, proceed normally
+        };
+
+        // Check if this idempotency key has been used before
+        if let Some(existing_record) = Self::get_idempotency_record(env, &idempotency_key) {
+            // Emit retry event for audit trail
+            env.events().publish(
+                (IDEMPOTENCY_KEY_USED,),
+                IdempotencyKeyRetryEvent {
+                    version: EVENT_VERSION_V2,
+                    idempotency_key: idempotency_key.clone(),
+                    original_success: existing_record.success,
+                    original_executed_at: existing_record.executed_at,
+                    original_executor: existing_record.executor,
+                    retry_attempt_at: env.ledger().timestamp(),
+                    retry_by: env.current_contract_address(),
+                },
+            );
+
+            // Return the existing record to signal a retry attempt
+            return Err(existing_record);
+        }
+
+        // New idempotency key, proceed with operation
+        Ok(())
     }
 
     /// Initialize a new program escrow
@@ -1985,6 +2207,19 @@ impl ProgramEscrowContract {
             },
         );
         Self::ensure_history_pagination_config(&env);
+        
+        // Initialize idempotency schema version for upgrade safety
+        env.storage().instance().set(&DataKey::IdempotencySchemaVersion, &IDEMPOTENCY_SCHEMA_VERSION_V1);
+        
+        // Emit idempotency schema version event
+        env.events().publish(
+            (IDEMPOTENCY_SCHEMA,),
+            IdempotencySchemaVersionSet {
+                version: EVENT_VERSION_V2,
+                schema_version: IDEMPOTENCY_SCHEMA_VERSION_V1,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
     /// Set or rotate admin. If no admin is set, sets initial admin. If admin exists, current admin must authorize and the new address becomes admin.
@@ -2561,6 +2796,17 @@ impl ProgramEscrowContract {
         env.storage()
             .instance()
             .get(&DataKey::PauseSchemaVersion)
+            .unwrap_or(0)
+    }
+
+    /// Returns the idempotency storage schema version written during initialization.
+    /// Returns `IDEMPOTENCY_SCHEMA_VERSION_V1` (1) for contracts initialized after
+    /// this upgrade. Returns `0` for legacy contracts that predate the schema
+    /// version marker — callers should treat `0` as "unknown / pre-v1".
+    pub fn get_idempotency_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::IdempotencySchemaVersion)
             .unwrap_or(0)
     }
 
@@ -3148,18 +3394,20 @@ impl ProgramEscrowContract {
     /// batch operation reverts, ensuring accounting consistency.
     ///
     /// # Arguments
-    /// * `recipients` - Vector of winner addresses.
-    /// * `amounts` - Vector of prize amounts (must match recipients length).
+    /// * `recipients` - Array of winner addresses.
+    /// * `amounts` - Corresponding prize amounts.
+    /// * `idempotency_key` - Optional idempotency key for retry safety.
     ///
     /// # Returns
-    /// The updated `ProgramData` reflecting the new balance and payout history.
+    /// The updated `ProgramData`.
     ///
     /// # Security
     /// - Requires authorization from the `authorized_payout_key`.
     /// - Protected by reentrancy guard.
     /// - Respects circuit breaker and threshold limits.
-    pub fn batch_payout(env: Env, recipients: soroban_sdk::Vec<Address>, amounts: soroban_sdk::Vec<i128>) -> ProgramData {
-        Self::batch_payout_internal(env, None, recipients, amounts)
+    /// - Idempotency key ensures deterministic behavior on retries.
+    pub fn batch_payout(env: Env, recipients: soroban_sdk::Vec<Address>, amounts: soroban_sdk::Vec<i128>, idempotency_key: Option<String>) -> ProgramData {
+        Self::batch_payout_internal(env, None, recipients, amounts, idempotency_key)
     }
 
     pub fn batch_payout_by(
@@ -3167,8 +3415,9 @@ impl ProgramEscrowContract {
         caller: Address,
         recipients: soroban_sdk::Vec<Address>,
         amounts: soroban_sdk::Vec<i128>,
+        idempotency_key: Option<String>,
     ) -> ProgramData {
-        Self::batch_payout_internal(env, Some(caller), recipients, amounts)
+        Self::batch_payout_internal(env, Some(caller), recipients, amounts, idempotency_key)
     }
 
     fn batch_payout_internal(
@@ -3176,6 +3425,7 @@ impl ProgramEscrowContract {
         caller: Option<Address>,
         recipients: soroban_sdk::Vec<Address>,
         amounts: soroban_sdk::Vec<i128>,
+        idempotency_key: Option<String>,
     ) -> ProgramData {
         // Validation precedence (deterministic ordering):
         // 1. Reentrancy guard
@@ -3220,6 +3470,10 @@ impl ProgramEscrowContract {
             panic!("Recipients and amounts vectors must have the same length");
         }
 
+        // 5a. Idempotency key validation (deterministic behavior)
+        let executor = caller.unwrap_or_else(|| env.current_contract_address());
+        // Note: We need to calculate total_payout first for idempotency validation
+
         if recipients.len() == 0 {
             reentrancy_guard::clear_entered(&env);
             panic!("Cannot process empty batch");
@@ -3236,6 +3490,30 @@ impl ProgramEscrowContract {
                 reentrancy_guard::clear_entered(&env);
                 panic!("Payout amount overflow")
             });
+        }
+
+        // 5b. Idempotency key validation (now that we have total_payout)
+        if let Err(existing_record) = Self::handle_idempotency(
+            &env,
+            idempotency_key,
+            symbol_short!("batch_payout"),
+            &program_data.program_id,
+            total_payout,
+            recipients.len() as u32,
+        ) {
+            reentrancy_guard::clear_entered(&env);
+            // Return the same result as the original operation for deterministic behavior
+            if existing_record.success {
+                // Return the stored program data (simulate successful retry)
+                return program_data;
+            } else {
+                // Retry the same error
+                if let Some(error_code) = existing_record.error_code {
+                    panic!("Idempotency retry: operation failed with code {}", error_code);
+                } else {
+                    panic!("Idempotency retry: operation failed");
+                }
+            }
         }
 
         // 6. Business logic: sufficient balance
@@ -3321,6 +3599,19 @@ impl ProgramEscrowContract {
         // Store updated data
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
+        // Store idempotency record if key was provided
+        if let Some(key) = idempotency_key {
+            Self::store_idempotency_record(
+                &env,
+                key,
+                symbol_short!("batch_payout"),
+                updated_data.program_id.clone(),
+                total_payout,
+                recipients.len() as u32,
+                executor,
+            );
+        }
+
         // Emit BatchPayout event
         env.events().publish(
             (BATCH_PAYOUT,),
@@ -3344,6 +3635,7 @@ impl ProgramEscrowContract {
     /// # Arguments
     /// * `recipient` - Address of the winner.
     /// * `amount` - Amount to transfer.
+    /// * `idempotency_key` - Optional idempotency key for retry safety.
     ///
     /// # Returns
     /// The updated `ProgramData`.
@@ -3352,8 +3644,9 @@ impl ProgramEscrowContract {
     /// - Requires authorization from the `authorized_payout_key`.
     /// - Protected by reentrancy guard.
     /// - Respects circuit breaker and threshold limits.
-    pub fn single_payout(env: Env, recipient: Address, amount: i128) -> ProgramData {
-        Self::single_payout_internal(env, None, recipient, amount)
+    /// - Idempotency key ensures deterministic behavior on retries.
+    pub fn single_payout(env: Env, recipient: Address, amount: i128, idempotency_key: Option<String>) -> ProgramData {
+        Self::single_payout_internal(env, None, recipient, amount, idempotency_key)
     }
 
     pub fn single_payout_by(
@@ -3361,8 +3654,9 @@ impl ProgramEscrowContract {
         caller: Address,
         recipient: Address,
         amount: i128,
+        idempotency_key: Option<String>,
     ) -> ProgramData {
-        Self::single_payout_internal(env, Some(caller), recipient, amount)
+        Self::single_payout_internal(env, Some(caller), recipient, amount, idempotency_key)
     }
 
     fn single_payout_internal(
@@ -3370,6 +3664,7 @@ impl ProgramEscrowContract {
         caller: Option<Address>,
         recipient: Address,
         amount: i128,
+        idempotency_key: Option<String>,
     ) -> ProgramData {
         // Validation precedence (deterministic ordering):
         // 1. Reentrancy guard
@@ -3412,6 +3707,31 @@ impl ProgramEscrowContract {
         if amount <= 0 {
             reentrancy_guard::clear_entered(&env);
             panic!("Amount must be greater than zero");
+        }
+
+        // 5a. Idempotency key validation (deterministic behavior)
+        let executor = caller.unwrap_or_else(|| env.current_contract_address());
+        if let Err(existing_record) = Self::handle_idempotency(
+            &env,
+            idempotency_key,
+            symbol_short!("single_payout"),
+            &program_data.program_id,
+            amount,
+            1, // Single payout has 1 recipient
+        ) {
+            reentrancy_guard::clear_entered(&env);
+            // Return the same result as the original operation for deterministic behavior
+            if existing_record.success {
+                // Return the stored program data (simulate successful retry)
+                return program_data;
+            } else {
+                // Retry the same error
+                if let Some(error_code) = existing_record.error_code {
+                    panic!("Idempotency retry: operation failed with code {}", error_code);
+                } else {
+                    panic!("Idempotency retry: operation failed");
+                }
+            }
         }
 
         // 6. Business logic: sufficient balance
@@ -3488,6 +3808,19 @@ impl ProgramEscrowContract {
         updated_data.payout_history = updated_history;
 
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
+
+        // Store idempotency record if key was provided
+        if let Some(key) = idempotency_key {
+            Self::store_idempotency_record(
+                &env,
+                key,
+                symbol_short!("single_payout"),
+                updated_data.program_id.clone(),
+                amount,
+                1, // Single payout has 1 recipient
+                executor,
+            );
+        }
 
         env.events().publish(
             (PAYOUT,),

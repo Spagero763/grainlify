@@ -3271,3 +3271,262 @@ fn test_pause_reason_cleared_on_full_unpause() {
     let flags = client.get_pause_flags();
     assert_eq!(flags.pause_reason, None, "reason must be cleared when fully unpaused");
 }
+
+// ========================================================================
+// Idempotency Key Tests
+// ========================================================================
+
+/// Test idempotency key validation for successful batch payout
+#[test]
+fntest_idempotency_key_batch_payout_success() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 100_0000000, 200_0000000];
+    let idempotency_key = String::from_str(&env, "test-batch-123");
+
+    // First successful payout with idempotency key
+    let result = client.batch_payout(&recipients, &amounts, &Some(idempotency_key.clone()));
+    assert_eq!(result.remaining_balance, 700_0000000);
+
+    // Verify idempotency record was stored
+    let record = env.storage().instance().get(&DataKey::IdempotencyKey(idempotency_key.clone())).unwrap();
+    assert_eq!(record.idempotency_key, idempotency_key);
+    assert_eq!(record.operation_type, symbol_short!("batch_payout"));
+    assert!(record.success);
+    assert_eq!(record.total_amount, 300_0000000);
+    assert_eq!(record.recipient_count, 2);
+
+    // Verify events were emitted
+    let events = env.events().all();
+    assert!(events.len() >= 2); // BatchPayout + IdempotencyKeyUsed
+}
+
+/// Test idempotency key retry behavior for batch payout
+#[test]
+fntest_idempotency_key_batch_payout_retry() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 100_0000000, 200_0000000];
+    let idempotency_key = String::from_str(&env, "test-batch-retry-456");
+
+    // First successful payout
+    let result1 = client.batch_payout(&recipients, &amounts, &Some(idempotency_key.clone()));
+    assert_eq!(result1.remaining_balance, 700_0000000);
+
+    // Retry with same idempotency key should return same result
+    let result2 = client.batch_payout(&recipients, &amounts, &Some(idempotency_key.clone()));
+    assert_eq!(result2.remaining_balance, 700_0000000);
+    assert_eq!(result1.payout_history.len(), result2.payout_history.len());
+
+    // Verify retry event was emitted
+    let events = env.events().all();
+    let retry_events: Vec<_> = events.iter()
+        .filter(|e| e.topics[0] == IDEMPOTENCY_KEY_USED)
+        .collect();
+    assert_eq!(retry_events.len(), 2); // First use + retry
+}
+
+/// Test idempotency key validation for successful single payout
+#[test]
+fntest_idempotency_key_single_payout_success() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 500_0000000;
+    let idempotency_key = String::from_str(&env, "test-single-789");
+
+    // First successful payout with idempotency key
+    let result = client.single_payout(&recipient, &amount, &Some(idempotency_key.clone()));
+    assert_eq!(result.remaining_balance, 500_0000000);
+
+    // Verify idempotency record was stored
+    let record = env.storage().instance().get(&DataKey::IdempotencyKey(idempotency_key.clone())).unwrap();
+    assert_eq!(record.idempotency_key, idempotency_key);
+    assert_eq!(record.operation_type, symbol_short!("single_payout"));
+    assert!(record.success);
+    assert_eq!(record.total_amount, 500_0000000);
+    assert_eq!(record.recipient_count, 1);
+}
+
+/// Test idempotency key retry behavior for single payout
+#[test]
+fntest_idempotency_key_single_payout_retry() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 300_0000000;
+    let idempotency_key = String::from_str(&env, "test-single-retry-999");
+
+    // First successful payout
+    let result1 = client.single_payout(&recipient, &amount, &Some(idempotency_key.clone()));
+    assert_eq!(result1.remaining_balance, 700_0000000);
+
+    // Retry with same idempotency key should return same result
+    let result2 = client.single_payout(&recipient, &amount, &Some(idempotency_key.clone()));
+    assert_eq!(result2.remaining_balance, 700_0000000);
+    assert_eq!(result1.payout_history.len(), result2.payout_history.len());
+}
+
+/// Test idempotency key validation failures
+#[test]
+fntest_idempotency_key_validation_failures() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 100_0000000;
+
+    // Empty idempotency key should panic
+    let empty_key = String::from_str(&env, "");
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout(&recipient, &amount, &Some(empty_key));
+    });
+    assert!(result.is_err());
+
+    // Oversized idempotency key should panic
+    let mut oversized_key = String::from_str(&env, "");
+    for _ in 0..300 {
+        oversized_key = oversized_key + "a";
+    }
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout(&recipient, &amount, &Some(oversized_key));
+    });
+    assert!(result.is_err());
+}
+
+/// Test idempotency key with insufficient funds (failure case)
+#[test]
+fntest_idempotency_key_insufficient_funds() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 100_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 2000_0000000; // More than available
+    let idempotency_key = String::from_str(&env, "test-insufficient-111");
+
+    // First attempt should fail
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout(&recipient, &amount, &Some(idempotency_key.clone()));
+    });
+    assert!(result.is_err());
+
+    // Verify failure record was stored
+    let record = env.storage().instance().get(&DataKey::IdempotencyKey(idempotency_key.clone())).unwrap();
+    assert_eq!(record.idempotency_key, idempotency_key);
+    assert!(!record.success);
+    assert!(record.error_code.is_some());
+
+    // Retry should return same failure
+    let result2 = std::panic::catch_unwind(|| {
+        client.single_payout(&recipient, &amount, &Some(idempotency_key.clone()));
+    });
+    assert!(result2.is_err());
+}
+
+/// Test idempotency schema version initialization
+#[test]
+fntest_idempotency_schema_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+
+    // Verify schema version is set
+    let schema_version = client.get_idempotency_schema_version();
+    assert_eq!(schema_version, IDEMPOTENCY_SCHEMA_VERSION_V1);
+
+    // Verify schema version event was emitted
+    let events = env.events().all();
+    let schema_events: Vec<_> = events.iter()
+        .filter(|e| e.topics[0] == IDEMPOTENCY_SCHEMA)
+        .collect();
+    assert_eq!(schema_events.len(), 1);
+}
+
+/// Test idempotency key with no key provided (normal operation)
+#[test]
+fntest_idempotency_key_none_provided() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 300_0000000;
+
+    // Payout without idempotency key should work normally
+    let result = client.single_payout(&recipient, &amount, &None);
+    assert_eq!(result.remaining_balance, 700_0000000);
+
+    // Should be able to do multiple payouts without idempotency keys
+    let recipient2 = Address::generate(&env);
+    let result2 = client.single_payout(&recipient2, &amount, &None);
+    assert_eq!(result2.remaining_balance, 400_0000000);
+}
+
+/// Test idempotency key isolation between different operations
+#[test]
+fntest_idempotency_key_operation_isolation() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let batch_amounts = vec![&env, 100_0000000, 100_0000000];
+    let single_amount = 200_0000000;
+    let idempotency_key = String::from_str(&env, "test-isolation-333");
+
+    // Batch payout with idempotency key
+    let batch_result = client.batch_payout(&recipients, &batch_amounts, &Some(idempotency_key.clone()));
+    assert_eq!(batch_result.remaining_balance, 800_0000000);
+
+    // Single payout with same idempotency key should fail (key already used)
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout(&recipient1, &single_amount, &Some(idempotency_key.clone()));
+    });
+    assert!(result.is_err());
+
+    // Verify retry of batch payout still works
+    let batch_retry = client.batch_payout(&recipients, &batch_amounts, &Some(idempotency_key.clone()));
+    assert_eq!(batch_retry.remaining_balance, 800_0000000); // Same as before
+}
+
+/// Test idempotency key with different keys for same operation
+#[test]
+fntest_idempotency_key_different_keys_same_operation() {
+    let env = Env::default();
+    let (client, admin, token, token_admin) = setup_program(&env, 1000_0000000);
+
+    let recipient = Address::generate(&env);
+    let amount = 300_0000000;
+    let key1 = String::from_str(&env, "test-diff-key-1");
+    let key2 = String::from_str(&env, "test-diff-key-2");
+
+    // First payout with key1
+    let result1 = client.single_payout(&recipient, &amount, &Some(key1.clone()));
+    assert_eq!(result1.remaining_balance, 700_0000000);
+
+    // Second payout with different key2 should work (different recipient)
+    let recipient2 = Address::generate(&env);
+    let result2 = client.single_payout(&recipient2, &amount, &Some(key2.clone()));
+    assert_eq!(result2.remaining_balance, 400_0000000);
+
+    // Verify both keys have their own records
+    let record1 = env.storage().instance().get(&DataKey::IdempotencyKey(key1)).unwrap();
+    let record2 = env.storage().instance().get(&DataKey::IdempotencyKey(key2)).unwrap();
+    assert_eq!(record1.recipient_count, 1);
+    assert_eq!(record2.recipient_count, 1);
+}
