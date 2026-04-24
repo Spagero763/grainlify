@@ -92,6 +92,27 @@ pub fn emit_bounty_initialized(env: &Env, event: BountyEscrowInitialized) {
     env.events().publish(topics, event.clone());
 }
 
+pub fn emit_admin_proposed(e: &Env, old: Address, new: Address) {
+    e.events().publish(
+        (symbol_short!("admin_prop"),),
+        (old, new),
+    );
+}
+
+pub fn emit_admin_transferred(e: &Env, old: Address, new: Address) {
+    e.events().publish(
+        (symbol_short!("admin_tx"),),
+        (old, new),
+    );
+}
+
+pub fn emit_admin_transfer_cancelled(e: &Env, admin: Address) {
+    e.events().publish(
+        (symbol_short!("admin_cancel"),),
+        (admin,),
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ADMIN ROTATION EVENTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -861,7 +882,7 @@ pub fn emit_deprecation_state_changed(env: &Env, event: DeprecationStateChanged)
 /// Payload for the [`emit_maintenance_mode_changed`] event.
 ///
 /// Emitted when maintenance mode is toggled by the admin.
-/// When enabled, all critical operations return `FundsPaused` 
+/// When enabled, all critical operations return `FundsPaused`
 /// (superseding granular pause flags).
 ///
 /// ### Topics
@@ -874,8 +895,6 @@ pub struct MaintenanceModeChanged {
     pub enabled: bool,
     pub reason: Option<soroban_sdk::String>,
     pub admin: Address,
-    /// Optional reason provided by the admin for enabling/disabling maintenance.
-    pub reason: Option<soroban_sdk::String>,
     pub timestamp: u64,
 }
 
@@ -956,6 +975,30 @@ pub fn emit_participant_filter_entry_updated(env: &Env, event: ParticipantFilter
     env.events().publish(topics, event);
 }
 
+/// Payload emitted after every `query_whitelist` / `query_blocklist` call for
+/// off-chain audit trails.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"pf_query"` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParticipantFilterQueried {
+    pub list_type: ParticipantFilterListType,
+    pub offset: u32,
+    pub limit: u32,
+    pub result_count: u32,
+    pub total: u32,
+    pub timestamp: u64,
+}
+
+/// Emit [`ParticipantFilterQueried`]
+pub fn emit_participant_filter_queried(env: &Env, event: ParticipantFilterQueried) {
+    let topics = (symbol_short!("pf_query"),);
+    env.events().publish(topics, event);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // RISK FLAG EVENTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -991,6 +1034,48 @@ pub struct RiskFlagsUpdated {
 /// Emit [`RiskFlagsUpdated`]
 pub fn emit_risk_flags_updated(env: &Env, event: RiskFlagsUpdated) {
     let topics = (symbol_short!("risk"), event.bounty_id);
+    env.events().publish(topics, event);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// METADATA EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Payload for the [`emit_metadata_updated`] event.
+///
+/// Emitted when bounty metadata is updated via
+/// [`BountyEscrowContract::update_metadata`].
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"metadata"` |
+/// | 1 | `bounty_id: u64` |
+///
+/// ### Security notes
+/// - Captures the admin performing the update for audit trail.
+/// - Includes the previous and new values for each field to allow
+///   off-chain indexers to track metadata evolution.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataUpdated {
+    pub version: u32,
+    pub bounty_id: u64,
+    pub admin: Address,
+    pub previous_repo_id: u64,
+    pub new_repo_id: u64,
+    pub previous_issue_id: u64,
+    pub new_issue_id: u64,
+    pub previous_bounty_type: soroban_sdk::String,
+    pub new_bounty_type: soroban_sdk::String,
+    pub previous_reference_hash: Option<soroban_sdk::Bytes>,
+    pub new_reference_hash: Option<soroban_sdk::Bytes>,
+    pub timestamp: u64,
+}
+
+/// Emit [`MetadataUpdated`]
+pub fn emit_metadata_updated(env: &Env, event: MetadataUpdated) {
+    let topics = (symbol_short!("metadata"), event.bounty_id);
     env.events().publish(topics, event);
 }
 
@@ -1769,78 +1854,101 @@ pub fn emit_fee_routing_schema_version_set(env: &Env, event: FeeRoutingSchemaVer
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RISK FLAG GOVERNANCE EVENTS
+// HIGH-VALUE TIMELOCK QUEUE CANCELLATION EVENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Emitted when an admin adds an address to the risk-flag governor list.
+/// Emitted when an admin cancels a pending high-value queued release.
 ///
 /// ### Topics
 /// | Index | Value |
 /// |-------|-------|
-/// | 0 | `"rg_add"` |
+/// | 0 | `"hv_cncl"` |
+/// | 1 | `bounty_id: u64` |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RiskGovernorAdded {
+pub struct ReleaseQueueCancelled {
     pub version: u32,
-    /// Address granted risk-flag mutation authority.
-    pub governor: Address,
-    /// Admin who added the governor.
-    pub added_by: Address,
+    pub bounty_id: u64,
+    pub contributor: Address,
+    pub amount: i128,
+    pub admin: Address,
     pub timestamp: u64,
 }
 
-/// Emit [`RiskGovernorAdded`].
-pub fn emit_risk_governor_added(env: &Env, event: RiskGovernorAdded) {
-    let topics = (symbol_short!("rg_add"),);
+pub fn emit_release_queue_cancelled(env: &Env, event: ReleaseQueueCancelled) {
+    let topics = (symbol_short!("hv_cncl"), event.bounty_id);
     env.events().publish(topics, event);
 }
 
-/// Emitted when an admin removes an address from the risk-flag governor list.
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLAIM-WINDOW EVENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Emitted when the admin sets (or updates) the global claim-window duration.
 ///
 /// ### Topics
 /// | Index | Value |
 /// |-------|-------|
-/// | 0 | `"rg_rm"` |
+/// | 0 | `"clm_win"` |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RiskGovernorRemoved {
+pub struct ClaimWindowSet {
     pub version: u32,
-    /// Address whose risk-flag authority was revoked.
-    pub governor: Address,
-    /// Admin who removed the governor.
-    pub removed_by: Address,
-    pub timestamp: u64,
-}
-
-/// Emit [`RiskGovernorRemoved`].
-pub fn emit_risk_governor_removed(env: &Env, event: RiskGovernorRemoved) {
-    let topics = (symbol_short!("rg_rm"),);
-    env.events().publish(topics, event);
-}
-
-/// Emitted once during `init()` to record the risk-flag storage schema version.
-///
-/// Mirrors the fee-routing schema version pattern: written to instance storage
-/// on initialization so upgrade safety checks can detect schema mismatches when
-/// the `EscrowMetadata` risk-flag layout changes.
-///
-/// ### Topics
-/// | Index | Value |
-/// |-------|-------|
-/// | 0 | `"rf_schm"` |
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RiskFlagSchemaVersionSet {
-    pub version: u32,
-    /// Risk-flag schema version written to instance storage.
-    pub schema_version: u32,
-    /// Admin that initialized the contract.
+    /// New claim-window duration in seconds. `0` means enforcement is disabled.
+    pub claim_window: u64,
+    /// Admin who made the change.
     pub set_by: Address,
+    /// Ledger timestamp.
     pub timestamp: u64,
 }
 
-/// Emit [`RiskFlagSchemaVersionSet`].
-pub fn emit_risk_flag_schema_version_set(env: &Env, event: RiskFlagSchemaVersionSet) {
-    let topics = (symbol_short!("rf_schm"),);
+pub fn emit_claim_window_set(env: &Env, event: ClaimWindowSet) {
+    let topics = (symbol_short!("clm_win"),);
+    env.events().publish(topics, event);
+}
+
+/// Emitted when a claim is validated as within the active window.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"clm_ok"` |
+/// | 1 | `bounty_id: u64` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimWindowValidated {
+    pub version: u32,
+    pub bounty_id: u64,
+    /// Current ledger timestamp.
+    pub now: u64,
+    /// Timestamp at which the claim window expires.
+    pub expires_at: u64,
+}
+
+pub fn emit_claim_window_validated(env: &Env, event: ClaimWindowValidated) {
+    let topics = (symbol_short!("clm_ok"), event.bounty_id);
+    env.events().publish(topics, event);
+}
+
+/// Emitted when a claim is rejected because the claim window has expired.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"clm_exp"` |
+/// | 1 | `bounty_id: u64` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimWindowExpired {
+    pub version: u32,
+    pub bounty_id: u64,
+    /// Current ledger timestamp.
+    pub now: u64,
+    /// Timestamp at which the claim window expired.
+    pub expires_at: u64,
+}
+
+pub fn emit_claim_window_expired(env: &Env, event: ClaimWindowExpired) {
+    let topics = (symbol_short!("clm_exp"), event.bounty_id);
     env.events().publish(topics, event);
 }
