@@ -897,6 +897,7 @@ pub enum DataKey {
     TokenAllowlistSchemaVersion,
     /// Read-only mode flag. When true, all state-mutating operations are blocked.
     ReadOnlyMode,
+    ReentrancyGuard,
 }
 
 #[contracttype]
@@ -3720,15 +3721,12 @@ impl ProgramEscrowContract {
         // 6. Business logic (sufficient balance)
         // 7. Circuit breaker check
 
-        // 1. Reentrancy guard
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         // 1b. Idempotency check — runs before any state reads so duplicate
         //     submissions are rejected cheaply and deterministically.
         if let Some(ref key) = idempotency_key {
             if env.storage().persistent().has(&DataKey::IdempotencyKey(key.clone())) {
-                reentrancy_guard::clear_entered(&env);
                 panic!("Payout already processed");
             }
         }
@@ -3739,19 +3737,16 @@ impl ProgramEscrowContract {
                 .instance()
                 .get(&PROGRAM_DATA)
                 .unwrap_or_else(|| {
-                    reentrancy_guard::clear_entered(&env);
                     panic!("Program not initialized")
                 });
 
         // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("release")) {
-            reentrancy_guard::clear_entered(&env);
             panic!("Funds Paused");
         }
 
         // 3b. Dispute guard — payouts blocked while a dispute is open
         if Self::dispute_state(&env) == DisputeState::Open {
-            reentrancy_guard::clear_entered(&env);
             panic!("Payout blocked: dispute open");
         }
 
@@ -3760,7 +3755,6 @@ impl ProgramEscrowContract {
 
         // 5. Input validation
         if recipients.len() != amounts.len() {
-            reentrancy_guard::clear_entered(&env);
             panic!("Recipients and amounts vectors must have the same length");
         }
 
@@ -3769,7 +3763,6 @@ impl ProgramEscrowContract {
         // Note: We need to calculate total_payout first for idempotency validation
 
         if recipients.len() == 0 {
-            reentrancy_guard::clear_entered(&env);
             panic!("Cannot process empty batch");
         }
 
@@ -3777,11 +3770,9 @@ impl ProgramEscrowContract {
         let mut total_payout: i128 = 0;
         for amount in amounts.iter() {
             if amount <= 0 {
-                reentrancy_guard::clear_entered(&env);
                 panic!("All amounts must be greater than zero");
             }
             total_payout = total_payout.checked_add(amount).unwrap_or_else(|| {
-                reentrancy_guard::clear_entered(&env);
                 panic!("Payout amount overflow")
             });
         }
@@ -3795,7 +3786,7 @@ impl ProgramEscrowContract {
             total_payout,
             recipients.len() as u32,
         ) {
-            reentrancy_guard::clear_entered(&env);
+
             // Return the same result as the original operation for deterministic behavior
             if existing_record.success {
                 // Return the stored program data (simulate successful retry)
@@ -3814,7 +3805,7 @@ impl ProgramEscrowContract {
         // Deterministic error ordering: spend threshold check runs before
         // balance/circuit checks, so clients observe stable failures.
         if Self::enforce_spend_threshold(&env, &program_data.program_id, total_payout).is_err() {
-            reentrancy_guard::clear_entered(&env);
+
             panic!("Spend threshold exceeded");
         }
 
@@ -3822,13 +3813,13 @@ impl ProgramEscrowContract {
         Self::enforce_spending_window(&env, &program_data.program_id, total_payout);
 
         if total_payout > program_data.remaining_balance {
-            reentrancy_guard::clear_entered(&env);
+
             panic!("Insufficient balance");
         }
 
         // 7. Circuit breaker check
         if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
-            reentrancy_guard::clear_entered(&env);
+
             if err_code == error_recovery::ERR_CIRCUIT_OPEN {
                 panic!("Circuit breaker is OPEN");
             } else {
@@ -3855,7 +3846,7 @@ impl ProgramEscrowContract {
             );
             let net = gross.checked_sub(pay_fee).unwrap_or(0);
             if net <= 0 {
-                reentrancy_guard::clear_entered(&env);
+
                 panic!("Payout fee consumes entire payout");
             }
 
@@ -3926,7 +3917,7 @@ impl ProgramEscrowContract {
         }
 
         // Clear reentrancy guard before returning
-        reentrancy_guard::clear_entered(&env);
+        reentrancy_guard::release(&env);
 
         updated_data
     }
@@ -3976,15 +3967,12 @@ impl ProgramEscrowContract {
         // 6. Business logic (sufficient balance)
         // 7. Circuit breaker check
 
-        // 1. Reentrancy guard
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         // 1b. Idempotency check — runs before any state reads so duplicate
         //     submissions are rejected cheaply and deterministically.
         if let Some(ref key) = idempotency_key {
             if env.storage().persistent().has(&DataKey::IdempotencyKey(key.clone())) {
-                reentrancy_guard::clear_entered(&env);
                 panic!("Payout already processed");
             }
         }
@@ -3995,19 +3983,16 @@ impl ProgramEscrowContract {
                 .instance()
                 .get(&PROGRAM_DATA)
                 .unwrap_or_else(|| {
-                    reentrancy_guard::clear_entered(&env);
                     panic!("Program not initialized")
                 });
 
         // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("release")) {
-            reentrancy_guard::clear_entered(&env);
             panic!("Funds Paused");
         }
 
         // 3b. Dispute guard — payouts blocked while a dispute is open
         if Self::dispute_state(&env) == DisputeState::Open {
-            reentrancy_guard::clear_entered(&env);
             panic!("Payout blocked: dispute open");
         }
 
@@ -4016,7 +4001,6 @@ impl ProgramEscrowContract {
 
         // 5. Input validation
         if amount <= 0 {
-            reentrancy_guard::clear_entered(&env);
             panic!("Amount must be greater than zero");
         }
 
@@ -4030,7 +4014,6 @@ impl ProgramEscrowContract {
             amount,
             1, // Single payout has 1 recipient
         ) {
-            reentrancy_guard::clear_entered(&env);
             // Return the same result as the original operation for deterministic behavior
             if existing_record.success {
                 // Return the stored program data (simulate successful retry)
@@ -4049,7 +4032,6 @@ impl ProgramEscrowContract {
         // Deterministic error ordering: spend threshold check runs before
         // balance/circuit checks, so clients observe stable failures.
         if Self::enforce_spend_threshold(&env, &program_data.program_id, amount).is_err() {
-            reentrancy_guard::clear_entered(&env);
             panic!("Spend threshold exceeded");
         }
 
@@ -4057,13 +4039,11 @@ impl ProgramEscrowContract {
         Self::enforce_spending_window(&env, &program_data.program_id, amount);
 
         if amount > program_data.remaining_balance {
-            reentrancy_guard::clear_entered(&env);
             panic!("Insufficient balance");
         }
 
         // 7. Circuit breaker check
         if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
-            reentrancy_guard::clear_entered(&env);
             if err_code == error_recovery::ERR_CIRCUIT_OPEN {
                 panic!("Circuit breaker is OPEN");
             } else {
@@ -4082,7 +4062,6 @@ impl ProgramEscrowContract {
         );
         let net = amount.checked_sub(pay_fee).unwrap_or(0);
         if net <= 0 {
-            reentrancy_guard::clear_entered(&env);
             panic!("Payout fee consumes entire payout");
         }
 
@@ -4151,7 +4130,7 @@ impl ProgramEscrowContract {
                 .set(&DataKey::IdempotencyKey(key), &true);
         }
 
-        reentrancy_guard::clear_entered(&env);
+        reentrancy_guard::release(&env);
 
         updated_data
     }
@@ -4319,27 +4298,20 @@ impl ProgramEscrowContract {
     }
 
     fn trigger_program_releases_internal(env: Env, caller: Option<Address>) -> u32 {
-        // Reentrancy guard: Check and set
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         let mut program_data: ProgramData = env
             .storage()
             .instance()
             .get(&PROGRAM_DATA)
-            .unwrap_or_else(|| {
-                reentrancy_guard::clear_entered(&env);
-                panic!("Program not initialized")
-            });
+            .unwrap_or_else(|| panic!("Program not initialized"));
 
         if program_data.status == ProgramStatus::Draft {
-            reentrancy_guard::clear_entered(&env);
             panic!("Program is in Draft status. Publish the program first.");
         }
         Self::authorize_release_actor(&env, &program_data, caller.as_ref());
 
         if Self::check_paused(&env, symbol_short!("release")) {
-            reentrancy_guard::clear_entered(&env);
             panic!("Funds Paused");
         }
 
@@ -4454,7 +4426,7 @@ impl ProgramEscrowContract {
         );
 
         // Clear reentrancy guard before returning
-        reentrancy_guard::clear_entered(&env);
+        reentrancy_guard::release(&env);
 
         released_count
     }

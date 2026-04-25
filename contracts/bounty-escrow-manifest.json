@@ -66,6 +66,16 @@
           "Limit argument silently capped at MAX_PARTICIPANT_FILTER_PAGE_SIZE (50) to bound per-call ledger cost",
           "Added ParticipantListSchemaVersion storage key initialized on contract init for upgrade-safe storage versioning"
         ]
+      },
+      {
+        "version": "2.5.0",
+        "release_date": "2026-04-25",
+        "changes": [
+          "Hardened reentrancy protection by migrating to a u32-based guard (NOT_ENTERED=1, ENTERED=2) with DataKey storage",
+          "Enforced strict Checks-Effects-Interactions (CEI) across all fund-mutating operations",
+          "Eliminated redundant manual reentrancy guard releases in error paths by leveraging Soroban's atomic state rollback",
+          "Consolidated reentrancy logic across BountyEscrow and ProgramEscrow contracts for a unified security posture"
+        ]
       }
     ]
   },
