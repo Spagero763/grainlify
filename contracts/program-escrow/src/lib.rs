@@ -3427,6 +3427,58 @@ impl ProgramEscrowContract {
         error_recovery::set_config(&env, config);
     }
 
+    /// Return a full snapshot of the circuit breaker's current status.
+    ///
+    /// Includes state, failure/success counts, timestamps, and configured thresholds.
+    /// Safe to call at any time; never modifies state.
+    pub fn get_circuit_status(env: Env) -> error_recovery::CircuitBreakerStatus {
+        error_recovery::get_status(&env)
+    }
+
+    /// Return the full circuit breaker error log (last N entries).
+    pub fn get_circuit_error_log(env: Env) -> soroban_sdk::Vec<error_recovery::ErrorEntry> {
+        error_recovery::get_error_log(&env)
+    }
+
+    /// Emergency-open the circuit breaker (circuit admin only).
+    ///
+    /// Immediately transitions the circuit to `Open`, blocking all payouts.
+    /// Use when a security incident is detected and payouts must be halted
+    /// before the failure threshold is naturally reached.
+    ///
+    /// Emits a `cb_open` audit event with reason `"emergency"`.
+    pub fn emergency_open_circuit(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored = error_recovery::get_circuit_admin(&env)
+            .expect("Circuit admin not set");
+        if admin != stored {
+            panic!("Unauthorized: only circuit admin can emergency-open circuit");
+        }
+        error_recovery::open_circuit(&env);
+    }
+
+    /// Initialize threshold monitoring with default configuration.
+    ///
+    /// Must be called once after contract deployment to enable threshold-based
+    /// circuit breaking. Idempotent — safe to call multiple times.
+    pub fn init_threshold_monitoring(env: Env) {
+        threshold_monitor::init_threshold_monitor(&env);
+    }
+
+    /// Return the current threshold monitoring configuration.
+    pub fn get_threshold_config(env: Env) -> threshold_monitor::ThresholdConfig {
+        threshold_monitor::get_threshold_config(&env)
+    }
+
+    /// Return the upgrade-safe circuit-breaker schema version.
+    /// Returns `0` on legacy deployments where the marker was never written.
+    pub fn get_circuit_breaker_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerSchemaVersion)
+            .unwrap_or(0u32)
+    }
+
     pub fn update_rate_limit_config(
         env: Env,
         window_size: u64,
