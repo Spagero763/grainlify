@@ -1881,6 +1881,38 @@ pub fn emit_release_queue_cancelled(env: &Env, event: ReleaseQueueCancelled) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HIGH-VALUE CONFIG SCHEMA VERSION EVENT (upgrade-safe marker)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Emitted once during `init()` to record the high-value timelock config storage
+/// schema version. Enables upgrade safety checks to detect schema mismatches
+/// when the `HighValueConfig` layout changes.
+///
+/// ### Topics
+/// | Index | Value |
+/// |-------|-------|
+/// | 0 | `"hv_schm"` |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HighValueConfigSchemaVersionSet {
+    pub version: u32,
+    /// Schema version written to instance storage.
+    pub schema_version: u32,
+    /// Admin that initialized the contract.
+    pub set_by: Address,
+    /// Ledger timestamp.
+    pub timestamp: u64,
+}
+
+pub fn emit_high_value_config_schema_version_set(
+    env: &Env,
+    event: HighValueConfigSchemaVersionSet,
+) {
+    let topics = (symbol_short!("hv_schm"),);
+    env.events().publish(topics, event);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CLAIM-WINDOW EVENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 

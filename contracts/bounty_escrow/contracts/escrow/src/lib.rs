@@ -923,6 +923,9 @@ pub enum DataKey {
     HighValueConfig,
     /// Per-bounty queued release entry awaiting timelock expiry.
     QueuedRelease(u64),
+    /// Upgrade-safe schema marker for high-value timelock config storage layout.
+    /// Increment when `HighValueConfig` or `QueuedRelease` layout changes.
+    HighValueConfigSchemaVersion,
 }
 
 #[contracttype]
@@ -1153,6 +1156,13 @@ const FEE_ROUTING_SCHEMA_VERSION_V1: u32 = 1;
 /// breaking way. Written to instance storage during `init` so upgrade safety
 /// checks can detect schema mismatches on legacy deployments.
 const RISK_FLAGS_SCHEMA_VERSION_V1: u32 = 1;
+
+/// Current high-value timelock config storage schema version.
+///
+/// Increment whenever the `HighValueConfig` or `QueuedRelease` struct layout
+/// changes in a breaking way. Written to instance storage during `init` so
+/// upgrade safety checks can detect schema mismatches on legacy deployments.
+const HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1: u32 = 1;
 
 /// Bitmask of all valid public risk flag bits.
 /// Any bits outside this mask are reserved and must be zero.
@@ -1485,10 +1495,26 @@ impl BountyEscrowContract {
             events::MaintenanceModeSchemaVersionSet {
                 version: EVENT_VERSION_V2,
                 schema_version: MAINTENANCE_MODE_SCHEMA_VERSION_V1,
+                set_by: admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        // Upgrade-safe high-value timelock config schema version initialization.
+        env.storage().instance().set(
+            &DataKey::HighValueConfigSchemaVersion,
+            &HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1,
+        );
+        events::emit_high_value_config_schema_version_set(
+            &env,
+            events::HighValueConfigSchemaVersionSet {
+                version: EVENT_VERSION_V2,
+                schema_version: HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1,
                 set_by: admin,
                 timestamp: env.ledger().timestamp(),
             },
         );
+
         Ok(())
     }
 
@@ -7551,6 +7577,10 @@ impl BountyEscrowContract {
     // ============================================================================
 
     /// Configures the high-value timelock threshold and duration.
+    ///
+    /// Both `threshold` and `duration` must be positive: a zero duration would
+    /// make releases immediately executable (defeating the timelock), and a
+    /// zero threshold would queue every release regardless of amount.
     pub fn set_high_value_config(
         env: Env,
         threshold: i128,
@@ -7560,6 +7590,11 @@ impl BountyEscrowContract {
         admin.require_auth();
 
         if threshold <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Duration must be > 0; otherwise the timelock delay is meaningless.
+        if duration == 0 {
             return Err(Error::InvalidAmount);
         }
 
@@ -7592,12 +7627,31 @@ impl BountyEscrowContract {
             .get(&DataKey::QueuedRelease(bounty_id))
     }
 
+    /// View: Gets the stored high-value config schema version (upgrade safety check).
+    pub fn get_hv_config_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HighValueConfigSchemaVersion)
+            .unwrap_or(0)
+    }
+
     /// Executes a queued high-value release once its timelock has elapsed.
     ///
     /// Anyone may call this after `executable_at`; the admin queued the release
     /// via `release_funds` and the timelock enforces the delay.
+    /// Applies release fees consistently with the standard `release_funds` path.
     pub fn execute_queued_release(env: Env, bounty_id: u64) -> Result<(), Error> {
         let _guard = NonReentrant::enter(&env);
+
+        // Contract must be initialized.
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotInitialized);
+        }
+
+        // Respect global release pause and maintenance mode.
+        if Self::check_paused(&env, symbol_short!("release")) {
+            return Err(Error::FundsPaused);
+        }
 
         let queued: QueuedRelease = env
             .storage()
@@ -7609,12 +7663,39 @@ impl BountyEscrowContract {
             return Err(Error::TimelockNotElapsed);
         }
 
-        // EFFECTS: remove queue entry before token transfer (CEI)
+        // Respect escrow-level and address-level freezes.
+        Self::ensure_escrow_not_frozen(&env, bounty_id)?;
+        Self::ensure_address_not_frozen(&env, &queued.contributor)?;
+
+        // Compute release fee (consistent with the standard release_funds path).
+        let (
+            _lock_fee_rate,
+            release_fee_rate,
+            _lock_fixed,
+            release_fixed_fee,
+            fee_recipient,
+            fee_enabled,
+        ) = Self::resolve_fee_config(&env);
+
+        let release_fee = Self::combined_fee_amount(
+            queued.amount,
+            release_fee_rate,
+            release_fixed_fee,
+            fee_enabled,
+        );
+        let net_payout = queued
+            .amount
+            .checked_sub(release_fee)
+            .unwrap_or(queued.amount);
+        if net_payout <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // EFFECTS: remove queue entry and update escrow state before transfers (CEI).
         env.storage()
             .persistent()
             .remove(&DataKey::QueuedRelease(bounty_id));
 
-        // Update escrow status to Released
         if env.storage().persistent().has(&DataKey::Escrow(bounty_id)) {
             let mut escrow: Escrow = env
                 .storage()
@@ -7628,13 +7709,32 @@ impl BountyEscrowContract {
                 .set(&DataKey::Escrow(bounty_id), &escrow);
         }
 
-        // INTERACTION: token transfer after state update
+        // INTERACTION: token transfers after all state mutations.
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token_addr);
+
+        if release_fee > 0 {
+            let mut fee_config = Self::get_fee_config_internal(&env);
+            fee_config.release_fee_rate = release_fee_rate;
+            fee_config.release_fixed_fee = release_fixed_fee;
+            fee_config.fee_recipient = fee_recipient;
+            fee_config.fee_enabled = fee_enabled;
+            Self::route_fee_for_bounty(
+                &env,
+                &client,
+                &fee_config,
+                bounty_id,
+                release_fee,
+                release_fee_rate,
+                queued.amount,
+                events::FeeOperationType::Release,
+            )?;
+        }
+
         client.transfer(
             &env.current_contract_address(),
             &queued.contributor,
-            &queued.amount,
+            &net_payout,
         );
 
         events::emit_queued_release_executed(
@@ -7643,7 +7743,7 @@ impl BountyEscrowContract {
                 version: events::EVENT_VERSION_V2,
                 bounty_id,
                 contributor: queued.contributor,
-                amount: queued.amount,
+                amount: net_payout,
                 timestamp: env.ledger().timestamp(),
             },
         );
