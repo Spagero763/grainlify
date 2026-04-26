@@ -3,7 +3,7 @@
   "contract_name": "ProgramEscrowContract",
   "contract_purpose": "Handles hackathon and program prize pools with batch payouts, dependency management, circuit breaker protection, and comprehensive monitoring",
   "version": {
-    "current": "2.8.0",
+    "current": "2.9.0",
     "schema": "1.0.0",
     "history": [
       {
@@ -124,6 +124,28 @@
           "Maintained backward compatibility: legacy contracts without trigger schema version default to 0 and continue operating",
           "Circuit breaker enforcement integrated into trigger path before all business logic for consistent error precedence",
           "All trigger events include version and timestamp for audit trail: ScheduleReleasedEvent, ScheduleTriggerSummaryEvent"
+        ]
+      },
+      {
+        "version": "2.9.0",
+        "release_date": "2026-04-26",
+        "changes": [
+          "Role separation: Admin (contract governance) and Controller (per-program payout key) are now fully distinct roles with independent auth paths",
+          "Two-step admin rotation: propose_admin (current admin) → accept_admin (proposed admin); prevents accidental key loss",
+          "Two-step controller rotation: propose_controller (controller or admin) → accept_controller (proposed controller); per-program rotation slot",
+          "cancel_admin_rotation: current admin can abort a pending admin rotation",
+          "cancel_controller_rotation: current controller or admin can abort a pending controller rotation",
+          "Added DataKey::PendingAdmin and DataKey::PendingController(String) upgrade-safe storage keys for rotation state",
+          "Added DataKey::ReentrancyGuard, IdempotencyKey, IdempotencySchemaVersion, BatchPayoutSchemaVersion, CircuitBreakerSchemaVersion, BatchReceipt — all missing variants that caused compilation failures",
+          "Added reentrancy_guard::clear_entered, set_entered, check_not_entered aliases for call-site compatibility",
+          "Removed #[contracterror] from ContractError (exceeded XDR VecM variant limit); description() impl preserved",
+          "Fixed symbol_short names exceeding Soroban 9-char limit: batch_payout→batchpay, single_payout→singlepay",
+          "Fixed duplicate fn names: get_batch_receipt (legacy→get_batch_receipt_legacy), require_not_read_only (maintenance→require_not_maintenance_mode)",
+          "Fixed long contract function names: get_circuit_breaker_schema_version→get_cb_schema_version, get_release_trigger_schema_version→get_trigger_schema_version",
+          "Fixed idempotency_key moved-value error in single_payout_internal and handle_idempotency",
+          "Removed duplicate idempotency key storage in single_payout_internal",
+          "Added #[cfg(test)] guard to test_batch_receipts module",
+          "Added 15 targeted tests covering: admin rotation (propose/accept/cancel/double-propose/no-pending), controller rotation (propose/accept/cancel/double-propose/no-pending), role separation (admin≠controller, events emitted)"
         ]
       }
     ]

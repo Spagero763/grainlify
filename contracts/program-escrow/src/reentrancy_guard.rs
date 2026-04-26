@@ -45,3 +45,30 @@ pub fn release(env: &Env) {
         .instance()
         .set(&DataKey::ReentrancyGuard, &NOT_ENTERED);
 }
+
+/// Alias for [`release`] — used on success paths to clear the entered flag.
+#[inline(always)]
+pub fn clear_entered(env: &Env) {
+    release(env);
+}
+
+/// Set the guard to ENTERED without the re-entrancy check.
+#[inline(always)]
+pub fn set_entered(env: &Env) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReentrancyGuard, &ENTERED);
+}
+
+/// Assert the guard is NOT_ENTERED without acquiring it.
+#[inline(always)]
+pub fn check_not_entered(env: &Env) {
+    let status: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ReentrancyGuard)
+        .unwrap_or(NOT_ENTERED);
+    if status != NOT_ENTERED {
+        panic!("Reentrancy detected");
+    }
+}
