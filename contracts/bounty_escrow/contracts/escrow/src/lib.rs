@@ -923,6 +923,9 @@ pub enum DataKey {
     HighValueConfig,
     /// Per-bounty queued release entry awaiting timelock expiry.
     QueuedRelease(u64),
+    /// Upgrade-safe schema marker for high-value timelock config storage layout.
+    /// Increment when `HighValueConfig` or `QueuedRelease` layout changes.
+    HighValueConfigSchemaVersion,
 }
 
 #[contracttype]
@@ -1153,6 +1156,13 @@ const FEE_ROUTING_SCHEMA_VERSION_V1: u32 = 1;
 /// breaking way. Written to instance storage during `init` so upgrade safety
 /// checks can detect schema mismatches on legacy deployments.
 const RISK_FLAGS_SCHEMA_VERSION_V1: u32 = 1;
+
+/// Current high-value timelock config storage schema version.
+///
+/// Increment whenever the `HighValueConfig` or `QueuedRelease` struct layout
+/// changes in a breaking way. Written to instance storage during `init` so
+/// upgrade safety checks can detect schema mismatches on legacy deployments.
+const HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1: u32 = 1;
 
 /// Bitmask of all valid public risk flag bits.
 /// Any bits outside this mask are reserved and must be zero.
@@ -1485,10 +1495,26 @@ impl BountyEscrowContract {
             events::MaintenanceModeSchemaVersionSet {
                 version: EVENT_VERSION_V2,
                 schema_version: MAINTENANCE_MODE_SCHEMA_VERSION_V1,
+                set_by: admin.clone(),
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        // Upgrade-safe high-value timelock config schema version initialization.
+        env.storage().instance().set(
+            &DataKey::HighValueConfigSchemaVersion,
+            &HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1,
+        );
+        events::emit_high_value_config_schema_version_set(
+            &env,
+            events::HighValueConfigSchemaVersionSet {
+                version: EVENT_VERSION_V2,
+                schema_version: HIGH_VALUE_CONFIG_SCHEMA_VERSION_V1,
                 set_by: admin,
                 timestamp: env.ledger().timestamp(),
             },
         );
+
         Ok(())
     }
 
@@ -7496,6 +7522,10 @@ impl BountyEscrowContract {
     // ============================================================================
 
     /// Configures the high-value timelock threshold and duration.
+    ///
+    /// Both `threshold` and `duration` must be positive: a zero duration would
+    /// make releases immediately executable (defeating the timelock), and a
+    /// zero threshold would queue every release regardless of amount.
     pub fn set_high_value_config(
         env: Env,
         threshold: i128,
@@ -7505,6 +7535,11 @@ impl BountyEscrowContract {
         admin.require_auth();
 
         if threshold <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Duration must be > 0; otherwise the timelock delay is meaningless.
+        if duration == 0 {
             return Err(Error::InvalidAmount);
         }
 
@@ -7537,10 +7572,19 @@ impl BountyEscrowContract {
             .get(&DataKey::QueuedRelease(bounty_id))
     }
 
+    /// View: Gets the stored high-value config schema version (upgrade safety check).
+    pub fn get_hv_config_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HighValueConfigSchemaVersion)
+            .unwrap_or(0)
+    }
+
     /// Executes a queued high-value release once its timelock has elapsed.
     ///
     /// Anyone may call this after `executable_at`; the admin queued the release
     /// via `release_funds` and the timelock enforces the delay.
+    /// Applies release fees consistently with the standard `release_funds` path.
     pub fn execute_queued_release(env: Env, bounty_id: u64) -> Result<(), Error> {
         reentrancy_guard::acquire(&env);
 

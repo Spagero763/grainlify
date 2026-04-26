@@ -1445,3 +1445,105 @@ fn test_high_value_config_not_set_releases_immediately() {
         EscrowStatus::Released
     );
 }
+
+#[test]
+fn test_set_high_value_config_zero_duration_rejected() {
+    let setup = TestSetup::new();
+    // duration == 0 would defeat the timelock entirely; must be rejected.
+    let res = setup.escrow.try_set_high_value_config(&5_000, &0);
+    assert!(matches!(res, Err(Ok(Error::InvalidAmount))));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #18)")]
+fn test_execute_queued_release_respects_maintenance_mode() {
+    let setup = TestSetup::new();
+    let bounty_id = 910;
+    let threshold: i128 = 5_000;
+    let duration: u64 = 3_600;
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+
+    setup.escrow.set_high_value_config(&threshold, &duration);
+    setup.token_admin.mint(&setup.depositor, &threshold);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &threshold, &deadline);
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+
+    // Advance past the timelock then engage maintenance mode.
+    setup.env.ledger().set_timestamp(setup.env.ledger().timestamp() + duration + 1);
+    setup.escrow.set_maintenance_mode(&true, &None);
+
+    // Should panic with FundsPaused (18).
+    setup.escrow.execute_queued_release(&bounty_id);
+}
+
+#[test]
+fn test_execute_queued_release_respects_escrow_freeze() {
+    let setup = TestSetup::new();
+    let bounty_id = 911;
+    let threshold: i128 = 5_000;
+    let duration: u64 = 3_600;
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+
+    setup.escrow.set_high_value_config(&threshold, &duration);
+    setup.token_admin.mint(&setup.depositor, &threshold);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &threshold, &deadline);
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+
+    // Freeze the escrow while the release is queued.
+    setup.escrow.freeze_escrow(&bounty_id, &None);
+
+    // Advance past the timelock.
+    setup.env.ledger().set_timestamp(setup.env.ledger().timestamp() + duration + 1);
+
+    // Execute should be blocked by the freeze.
+    let res = setup.escrow.try_execute_queued_release(&bounty_id);
+    assert!(matches!(res, Err(Ok(Error::EscrowFrozen))));
+}
+
+#[test]
+fn test_high_value_config_schema_version_set_on_init() {
+    let setup = TestSetup::new();
+    // Schema version must be written during init() for upgrade-safe semantics.
+    assert_eq!(setup.escrow.get_hv_config_schema_version(), 1);
+}
+
+#[test]
+fn test_execute_queued_release_applies_release_fee() {
+    let setup = TestSetup::new();
+    let bounty_id = 912;
+    let threshold: i128 = 10_000;
+    let duration: u64 = 3_600;
+    let deadline = setup.env.ledger().timestamp() + 10_000;
+
+    // Configure a 10% (1_000 bps) release fee routed to the admin.
+    setup.escrow.update_fee_config(
+        &None,
+        &Some(1_000_i128), // release_fee_rate (10%)
+        &None,
+        &None,
+        &Some(setup.admin.clone()),
+        &Some(true),
+    );
+
+    setup.escrow.set_high_value_config(&threshold, &duration);
+    setup.token_admin.mint(&setup.depositor, &threshold);
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &threshold, &deadline);
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+
+    // Advance past the timelock.
+    setup.env.ledger().set_timestamp(setup.env.ledger().timestamp() + duration + 1);
+    setup.escrow.execute_queued_release(&bounty_id);
+
+    // Contributor should receive net (90% of threshold = 9_000).
+    let contributor_balance = setup.token.balance(&setup.contributor);
+    assert_eq!(contributor_balance, 9_000);
+
+    // Admin should receive the fee (10% of threshold = 1_000).
+    let admin_balance = setup.token.balance(&setup.admin);
+    assert_eq!(admin_balance, 1_000);
+
+    assert_eq!(
+        setup.escrow.get_escrow_info(&bounty_id).status,
+        EscrowStatus::Released
+    );
+}
