@@ -2,6 +2,24 @@
   "$schema": "./contract-manifest-schema.json",
   "contract_name": "GrainlifyContract",
   "contract_purpose": "Provides secure contract upgrade mechanism with version tracking, migration support, multisig governance, and comprehensive monitoring capabilities",
+  "error_registry": {
+    "codes": [
+      { "code": 1, "name": "AlreadyInitialized", "description": "Contract already initialized" },
+      { "code": 2, "name": "NotInitialized", "description": "Contract not initialized" },
+      { "code": 3, "name": "NotAdmin", "description": "Caller is not admin" },
+      { "code": 101, "name": "ThresholdNotMet", "description": "Multisig threshold not met" },
+      { "code": 102, "name": "ProposalNotFound", "description": "Upgrade proposal not found" },
+      { "code": 103, "name": "MigrationCommitmentNotFound", "description": "Migration hash commitment not found" },
+      { "code": 104, "name": "MigrationHashMismatch", "description": "Migration hash does not match committed hash" },
+      { "code": 105, "name": "TimelockDelayTooHigh", "description": "Timelock delay exceeds maximum" },
+      { "code": 106, "name": "SnapshotRestoreAdminPending", "description": "Snapshot restore requires admin confirmation" },
+      { "code": 107, "name": "SnapshotPruned", "description": "Snapshot was pruned and is no longer available" }
+    ],
+    "ranges": [
+      { "name": "common", "min": 1, "max": 100, "description": "Common initialization and auth errors" },
+      { "name": "governance", "min": 101, "max": 200, "description": "Upgrade and snapshot errors" }
+    ]
+  },
   "version": {
     "current": "2.2.0",
     "schema": "1.0.0",
@@ -738,6 +756,12 @@
       "Two-step admin restore: restoring a snapshot that changes the admin address requires confirmation from the new admin address, preventing silent admin takeover",
       "Pending admin restore expiry: unconfirmed admin restores expire after DEFAULT_TIMELOCK_DELAY (24h) to prevent dangling restore requests"
     ],
+    "snapshot_rollback": {
+      "enabled": true,
+      "snapshot_limit": 20,
+      "two_step_admin_restore": true,
+      "blocked_in_read_only": true
+    },
     "access_control": [
       {
         "mechanism": "admin_auth",

@@ -189,6 +189,27 @@
           "items": {
             "$ref": "#/$defs/event"
           }
+        },
+        "snapshot_rollback": {
+          "type": "object",
+          "description": "Configuration and policy for on-chain state snapshots and rollbacks",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "snapshot_limit": {
+              "type": "integer",
+              "description": "Maximum number of retained snapshots"
+            },
+            "two_step_admin_restore": {
+              "type": "boolean",
+              "description": "Whether restoring an admin change requires a two-step confirmation"
+            },
+            "blocked_in_read_only": {
+              "type": "boolean",
+              "description": "Whether snapshot mutations are blocked when the contract is in read-only mode"
+            }
+          }
         }
       }
     },
