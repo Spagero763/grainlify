@@ -42,7 +42,6 @@ use soroban_sdk::contracterror;
 /// Error messages are intentionally generic and do not contain sensitive data
 /// such as addresses, amounts, or internal state. This prevents information
 /// leakage through error channels.
-#[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ContractError {
@@ -854,6 +853,11 @@ impl ContractError {
             ContractError::TokenNotAllowed => "Token is not on the allowlist",
             ContractError::TokenAlreadyAllowed => "Token is already on the allowlist",
             ContractError::TokenNotInAllowlist => "Token is not in the allowlist",
+
+            // Release Trigger / Schedule Errors
+            ContractError::ReleaseTriggerFailed => "Release trigger failed",
+            ContractError::NoSchedulesDue => "No schedules are due for release",
+            ContractError::DeterminismViolation => "Determinism violation detected",
         }
     }
     

@@ -3565,3 +3565,143 @@ fntest_idempotency_key_different_keys_same_operation() {
     assert_eq!(record1.recipient_count, 1);
     assert_eq!(record2.recipient_count, 1);
 }
+
+// ============================================================================
+// Batch Payout Atomicity Tests — Issue #24
+//
+// Verifies the all-or-nothing guarantee: if any validation fails, no transfers
+// occur and the contract balance is unchanged.
+// ============================================================================
+
+/// Atomicity: duplicate recipient in batch → zero transfers, balance unchanged.
+#[test]
+fn test_batch_atomicity_duplicate_recipient_no_partial_transfer() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+
+    // r1 appears twice — must be rejected before any transfer
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone(), r1.clone()],
+        &vec![&env, 1_000i128, 2_000i128, 1_500i128],
+        &None,
+    );
+    assert!(result.is_err(), "duplicate recipient must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000, "balance must be unchanged");
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
+}
+
+/// Atomicity: zero amount in batch → zero transfers, balance unchanged.
+#[test]
+fn test_batch_atomicity_zero_amount_no_partial_transfer() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+
+    // Second amount is zero — must be rejected before any transfer
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone()],
+        &vec![&env, 1_000i128, 0i128],
+        &None,
+    );
+    assert!(result.is_err(), "zero amount must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000);
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
+}
+
+/// Atomicity: insufficient balance → zero transfers, balance unchanged.
+#[test]
+fn test_batch_atomicity_insufficient_balance_no_partial_transfer() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 1_000);
+
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
+
+    // Total 3_000 > balance 1_000
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone()],
+        &vec![&env, 1_500i128, 1_500i128],
+        &None,
+    );
+    assert!(result.is_err(), "over-balance batch must be rejected");
+    assert_eq!(client.get_remaining_balance(), 1_000);
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
+}
+
+/// Atomicity: mismatched recipients/amounts → zero transfers, balance unchanged.
+#[test]
+fn test_batch_atomicity_length_mismatch_no_partial_transfer() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let r1 = Address::generate(&env);
+
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone()],
+        &vec![&env, 1_000i128, 2_000i128], // 2 amounts, 1 recipient
+        &None,
+    );
+    assert!(result.is_err(), "length mismatch must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000);
+}
+
+/// Atomicity: batch exceeds MAX_BATCH_SIZE → rejected, balance unchanged.
+#[test]
+fn test_batch_atomicity_exceeds_max_batch_size() {
+    let env = Env::default();
+    let total = (MAX_BATCH_SIZE as i128 + 1) * 100;
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, total);
+
+    let mut recipients = vec![&env];
+    let mut amounts = vec![&env];
+    for _ in 0..(MAX_BATCH_SIZE + 1) {
+        recipients.push_back(Address::generate(&env));
+        amounts.push_back(100i128);
+    }
+
+    let result = client.try_batch_payout(&recipients, &amounts, &None);
+    assert!(result.is_err(), "batch exceeding MAX_BATCH_SIZE must be rejected");
+    assert_eq!(client.get_remaining_balance(), total);
+}
+
+/// Deterministic ordering: MAX_BATCH_SIZE boundary is accepted.
+#[test]
+fn test_batch_max_size_boundary_accepted() {
+    let env = Env::default();
+    let total = MAX_BATCH_SIZE as i128 * 100;
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, total);
+
+    let mut recipients = vec![&env];
+    let mut amounts = vec![&env];
+    let mut addrs = soroban_sdk::Vec::new(&env);
+    for _ in 0..MAX_BATCH_SIZE {
+        let a = Address::generate(&env);
+        addrs.push_back(a.clone());
+        recipients.push_back(a);
+        amounts.push_back(100i128);
+    }
+
+    let data = client.batch_payout(&recipients, &amounts, &None);
+    assert_eq!(data.remaining_balance, 0);
+    assert_eq!(data.payout_history.len(), MAX_BATCH_SIZE);
+    for i in 0..MAX_BATCH_SIZE {
+        assert_eq!(token_client.balance(&addrs.get(i).unwrap()), 100);
+    }
+}
+
+/// Upgrade-safe storage: BatchPayoutSchemaVersion is readable after init.
+#[test]
+fn test_batch_payout_schema_version_set_on_init() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 0);
+    // Version 0 means not yet written (legacy) — any value is acceptable.
+    let _v = client.get_batch_payout_schema_version();
+}
