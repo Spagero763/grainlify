@@ -45,3 +45,17 @@ pub fn release(env: &Env) {
         .instance()
         .set(&DataKey::ReentrancyGuard, &NOT_ENTERED);
 }
+
+#[inline(always)]
+pub fn clear_entered(env: &Env) { release(env); }
+
+#[inline(always)]
+pub fn set_entered(env: &Env) {
+    env.storage().instance().set(&DataKey::ReentrancyGuard, &ENTERED);
+}
+
+#[inline(always)]
+pub fn check_not_entered(env: &Env) {
+    let s: u32 = env.storage().instance().get(&DataKey::ReentrancyGuard).unwrap_or(NOT_ENTERED);
+    if s != NOT_ENTERED { panic!("Reentrancy detected"); }
+}

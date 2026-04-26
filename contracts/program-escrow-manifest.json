@@ -3,7 +3,7 @@
   "contract_name": "ProgramEscrowContract",
   "contract_purpose": "Handles hackathon and program prize pools with batch payouts, dependency management, circuit breaker protection, and comprehensive monitoring",
   "version": {
-    "current": "2.8.0",
+    "current": "2.9.0",
     "schema": "1.0.0",
     "history": [
       {
@@ -124,6 +124,28 @@
           "Maintained backward compatibility: legacy contracts without trigger schema version default to 0 and continue operating",
           "Circuit breaker enforcement integrated into trigger path before all business logic for consistent error precedence",
           "All trigger events include version and timestamp for audit trail: ScheduleReleasedEvent, ScheduleTriggerSummaryEvent"
+        ]
+      },
+      {
+        "version": "2.9.0",
+        "release_date": "2026-04-26",
+        "changes": [
+          "Pause mode blocks payouts: release_paused=true deterministically rejects single_payout and batch_payout before authorization checks",
+          "Pause check (step 3) runs before authorization (step 4) — all callers receive the same rejection regardless of auth status",
+          "lock_paused=true blocks lock_program_funds; refund_paused=true blocks refund operations",
+          "Flags are independent: lock_paused does not affect payouts; release_paused does not affect locks",
+          "PauseFlags stored under DataKey::PauseFlags in instance storage (upgrade-safe)",
+          "PauseSchemaVersion written to DataKey::PauseSchemaVersion on init — returns PAUSE_SCHEMA_VERSION_V1 (1) for upgraded contracts, 0 for legacy",
+          "PauseStateChangedV2 event emitted on every set_paused call with: version, operation, previous_paused, paused, admin, reason, timestamp, receipt_id",
+          "Added missing DataKey variants: ReentrancyGuard, PendingAdmin, PendingController, IdempotencyKey, IdempotencySchemaVersion, BatchPayoutSchemaVersion, CircuitBreakerSchemaVersion, BatchReceipt",
+          "Added reentrancy_guard::clear_entered/set_entered/check_not_entered aliases",
+          "Removed #[contracterror] from ContractError (exceeded XDR VecM variant limit)",
+          "Fixed symbol_short names exceeding 9-char limit: batch_payout→batchpay, single_payout→singlepay",
+          "Fixed duplicate fn names: get_batch_receipt→get_batch_receipt_legacy, require_not_read_only (maintenance)→require_not_maintenance_mode",
+          "Fixed long contract fn names: get_circuit_breaker_schema_version→get_cb_schema_version, get_release_trigger_schema_version→get_trigger_schema_version",
+          "Fixed bail! macro (undefined in no_std) → panic! in batch_payout_internal",
+          "Fixed duplicate circuit breaker check and duplicate idempotency storage",
+          "Added 10 targeted tests (PM-A through PM-J): release blocks single/batch payout, unpause restores, lock independence, schema version, full pause/unpause cycle, events, auth-before-pause ordering"
         ]
       }
     ]
