@@ -72,14 +72,15 @@
         "release_date": "2026-04-24",
         "changes": [
           "Added high-value release timelock queue: releases at or above a configurable threshold are queued with a mandatory delay before execution",
-          "Added set_high_value_config (admin) to configure threshold and duration",
+          "Added set_high_value_config (admin) to configure threshold and duration; both must be > 0",
           "Added get_high_value_config view to read current configuration",
           "Added get_queued_release view to inspect a pending queued release",
-          "Added execute_queued_release (permissionless after delay) to finalize a queued release",
+          "Added execute_queued_release (permissionless after delay) to finalize a queued release; respects maintenance mode, escrow freeze, and applies release fees",
           "Added cancel_queued_release (admin) to cancel a pending queued release",
-          "Added DataKey::HighValueConfig and DataKey::QueuedRelease(u64) storage keys",
-          "Added HighValueConfigUpdated, ReleaseQueued, QueuedReleaseExecuted, ReleaseQueueCancelled audit events",
-          "Added TimelockNotElapsed (53) and ReleaseAlreadyQueued (54) error codes"
+          "Added DataKey::HighValueConfig, DataKey::QueuedRelease(u64), and DataKey::HighValueConfigSchemaVersion storage keys",
+          "Added HighValueConfigUpdated, ReleaseQueued, QueuedReleaseExecuted, ReleaseQueueCancelled, and HighValueConfigSchemaVersionSet audit events",
+          "Added TimelockNotElapsed (53) and ReleaseAlreadyQueued (54) error codes",
+          "Added get_high_value_config_schema_version view for upgrade safety checks"
         ]
       }
     ]
@@ -1231,7 +1232,7 @@
           {
             "name": "duration",
             "type": "u64",
-            "description": "Delay in seconds before a queued release becomes executable."
+            "description": "Delay in seconds before a queued release becomes executable. Must be > 0."
           }
         ],
         "returns": { "type": "()", "description": "Empty on success" },
@@ -1256,7 +1257,7 @@
       },
       {
         "name": "execute_queued_release",
-        "description": "Execute a queued high-value release once its timelock has elapsed. Permissionless — anyone may call after executable_at. Emits QueuedReleaseExecuted.",
+        "description": "Execute a queued high-value release once its timelock has elapsed. Permissionless — anyone may call after executable_at. Respects maintenance mode and release pause flags. Respects escrow freeze and contributor address freeze. Applies release fees consistently with release_funds. Emits QueuedReleaseExecuted.",
         "parameters": [
           {
             "name": "bounty_id",
@@ -1266,7 +1267,7 @@
         ],
         "returns": { "type": "()", "description": "Empty on success" },
         "authorization": "any",
-        "pausable": false,
+        "pausable": true,
         "gas_estimate": "medium"
       }
     ]
@@ -1487,6 +1488,12 @@
         "type": "persistent",
         "description": "Per-bounty queued release entry awaiting timelock expiry. Keyed by bounty_id.",
         "data_structure": "QueuedRelease"
+      },
+      {
+        "name": "HighValueConfigSchemaVersion",
+        "type": "instance",
+        "description": "Upgrade-safe schema marker for high-value timelock config storage layout. Initialized to 1 during init(). Increment when HighValueConfig or QueuedRelease layout changes.",
+        "data_structure": "u32"
       }
     ]
   },

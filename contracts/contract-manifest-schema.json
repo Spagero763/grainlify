@@ -388,11 +388,16 @@
         "authorization": {
           "type": "string",
           "description": "Authorization requirements",
-          "enum": ["admin", "signer", "any", "capability", "multisig"]
+          "enum": ["admin", "signer", "any", "none", "capability", "multisig", "admin-or-governor"]
         },
         "pausable": {
           "type": "boolean",
           "description": "Whether this function can be paused"
+        },
+        "timelocked": {
+          "type": "boolean",
+          "description": "Whether this function requires a timelock delay before execution",
+          "default": false
         },
         "gas_estimate": {
           "type": "string",
@@ -446,6 +451,16 @@
         },
         "admin_only": {
           "type": "boolean",
+          "default": false
+        },
+        "timelock_seconds": {
+          "type": "integer",
+          "description": "Required timelock delay in seconds for applying this configuration parameter",
+          "minimum": 0
+        },
+        "requires_proposal": {
+          "type": "boolean",
+          "description": "Whether this parameter must be changed via propose/execute governance flow",
           "default": false
         }
       }
@@ -549,6 +564,21 @@
         "trigger": {
           "type": "string",
           "description": "When this event is emitted"
+        },
+        "topic": {
+          "type": "array",
+          "description": "Event topic path as emitted on-chain (e.g. [\"init\", \"build\"])",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth_context": {
+          "type": "string",
+          "description": "Authorization context required for the event to be emitted"
+        },
+        "security_notes": {
+          "type": "string",
+          "description": "Security and audit notes for the event"
         }
       }
     },

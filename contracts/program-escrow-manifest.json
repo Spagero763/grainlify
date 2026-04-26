@@ -3,7 +3,7 @@
   "contract_name": "ProgramEscrowContract",
   "contract_purpose": "Handles hackathon and program prize pools with batch payouts, dependency management, circuit breaker protection, and comprehensive monitoring",
   "version": {
-    "current": "2.7.0",
+    "current": "2.8.0",
     "schema": "1.0.0",
     "history": [
       {
@@ -110,6 +110,20 @@
           "Fixed syntax errors in BatchError definition",
           "Added BatchFundsLocked and BatchFundsReleased audit events",
           "Enhanced test coverage for batch edge cases"
+        ]
+      },
+      {
+        "version": "2.8.0",
+        "release_date": "2026-04-25",
+        "changes": [
+          "Added scheduled releases trigger with deterministic behavior: all due schedules processed in ascending schedule_id order for replay-identical execution",
+          "Implemented upgrade-safe trigger execution storage: ReleaseTriggerSchemaVersion tracks schema evolution and enables backward-compatible migrations",
+          "Added explicit release trigger error codes: ReleaseTriggerFailed (905), NoSchedulesDue (906), DeterminismViolation (907)",
+          "Added get_release_trigger_schema_version() view entrypoint: returns RELEASE_TRIGGER_SCHEMA_VERSION_V1 (1) for upgraded contracts, 0 for legacy",
+          "Enhanced trigger_program_releases_internal documentation with deterministic behavior guarantees, explicit error semantics, and upgrade-safe storage notes",
+          "Maintained backward compatibility: legacy contracts without trigger schema version default to 0 and continue operating",
+          "Circuit breaker enforcement integrated into trigger path before all business logic for consistent error precedence",
+          "All trigger events include version and timestamp for audit trail: ScheduleReleasedEvent, ScheduleTriggerSummaryEvent"
         ]
       }
     ]

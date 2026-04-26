@@ -535,6 +535,28 @@ pub enum ContractError {
     SpendLimitExceeded = 904,
     
     // =========================================================================
+    // Release Trigger Errors (905-909)
+    // =========================================================================
+    
+    /// Release trigger encountered a critical error.
+    ///
+    /// This error occurs when the release trigger encounters
+    /// unrecoverable internal state corruption or determinism violation.
+    ReleaseTriggerFailed = 905,
+    
+    /// No schedules were due for processing.
+    ///
+    /// This error occurs when trigger_program_releases is called
+    /// but no schedules meet the release timestamp threshold.
+    NoSchedulesDue = 906,
+    
+    /// Determinism violation detected during trigger.
+    ///
+    /// This error occurs when the trigger execution detects
+    /// a violation of the deterministic ordering guarantee.
+    DeterminismViolation = 907,
+    
+    // =========================================================================
     // Batch Recovery Errors (1000-1099)
     // =========================================================================
     

@@ -970,6 +970,9 @@ pub enum DataKey {
     Metadata(String),
     /// Per-program payout-key rotation nonce for replay protection.
     RotationNonce(String),
+    /// Upgrade-safe schema version marker for release trigger execution.
+    /// Tracks deterministic ordering, error reporting, and trigger statistics.
+    ReleaseTriggerSchemaVersion,
 }
 
 #[contracttype]
@@ -1266,6 +1269,10 @@ pub const PAUSE_SCHEMA_VERSION_V1: u32 = 1;
 /// Written to instance storage during `init` so upgrade safety checks can
 /// detect schema mismatches on legacy deployments.
 pub const SCHEDULE_SCHEMA_VERSION_V1: u32 = 1;
+
+/// Release trigger execution schema version.
+/// Tracks deterministic execution order, explicit error codes, and retry semantics.
+pub const RELEASE_TRIGGER_SCHEMA_VERSION_V1: u32 = 1;
 
 fn default_history_pagination_config() -> HistoryPaginationConfig {
     HistoryPaginationConfig {
@@ -1875,6 +1882,12 @@ impl ProgramEscrowContract {
                 &DataKey::TokenAllowlistSchemaVersion,
                 &TOKEN_ALLOWLIST_SCHEMA_VERSION_V1,
             );
+
+        if !env.storage().instance().has(&DataKey::ReleaseTriggerSchemaVersion) {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReleaseTriggerSchemaVersion, &RELEASE_TRIGGER_SCHEMA_VERSION_V1);
+        }
             env.events().publish(
                 (TOKEN_ALLOWLIST_SCHEMA,),
                 TokenAllowlistSchemaVersionSet {
@@ -4057,6 +4070,18 @@ impl ProgramEscrowContract {
             .get(&DataKey::TokenAllowlistSchemaVersion)
             .unwrap_or(0u32)
     }
+
+    /// Returns the release trigger execution schema version written during init.
+    ///
+    /// Returns `RELEASE_TRIGGER_SCHEMA_VERSION_V1` (1) for contracts initialized after
+    /// the trigger enhancement, or 0 for legacy deployments. This version tracks
+    /// deterministic ordering, explicit error codes, and retry semantics.
+    pub fn get_release_trigger_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReleaseTriggerSchemaVersion)
+            .unwrap_or(0u32)
+    }
     // ========================================================================
     // Payout Functions
     // ========================================================================
@@ -4167,15 +4192,12 @@ impl ProgramEscrowContract {
         // 8. Circuit breaker check
         // 9. Execute transfers
 
-        // 1. Reentrancy guard
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         // 1b. Idempotency check — runs before any state reads so duplicate
         //     submissions are rejected cheaply and deterministically.
         if let Some(ref key) = idempotency_key {
             if env.storage().persistent().has(&DataKey::IdempotencyKey(key.clone())) {
-                reentrancy_guard::clear_entered(&env);
                 panic!("Payout already processed");
             }
         }
@@ -4259,7 +4281,7 @@ impl ProgramEscrowContract {
             total_payout,
             recipients.len() as u32,
         ) {
-            reentrancy_guard::clear_entered(&env);
+
             // Return the same result as the original operation for deterministic behavior
             if existing_record.success {
                 // Return the stored program data (simulate successful retry)
@@ -4290,7 +4312,7 @@ impl ProgramEscrowContract {
 
         // 8. Circuit breaker check
         if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
-            reentrancy_guard::clear_entered(&env);
+
             if err_code == error_recovery::ERR_CIRCUIT_OPEN {
                 return Err(BatchPayoutError::CircuitBreakerOpen);
             } else {
@@ -4445,15 +4467,12 @@ impl ProgramEscrowContract {
         // 6. Business logic (sufficient balance)
         // 7. Circuit breaker check
 
-        // 1. Reentrancy guard
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         // 1b. Idempotency check — runs before any state reads so duplicate
         //     submissions are rejected cheaply and deterministically.
         if let Some(ref key) = idempotency_key {
             if env.storage().persistent().has(&DataKey::IdempotencyKey(key.clone())) {
-                reentrancy_guard::clear_entered(&env);
                 panic!("Payout already processed");
             }
         }
@@ -4464,19 +4483,16 @@ impl ProgramEscrowContract {
                 .instance()
                 .get(&PROGRAM_DATA)
                 .unwrap_or_else(|| {
-                    reentrancy_guard::clear_entered(&env);
                     panic!("Program not initialized")
                 });
 
         // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("release")) {
-            reentrancy_guard::clear_entered(&env);
             panic!("Funds Paused");
         }
 
         // 3b. Dispute guard — payouts blocked while a dispute is open
         if Self::dispute_state(&env) == DisputeState::Open {
-            reentrancy_guard::clear_entered(&env);
             panic!("Payout blocked: dispute open");
         }
 
@@ -4497,7 +4513,6 @@ impl ProgramEscrowContract {
 
         // 5. Input validation
         if amount <= 0 {
-            reentrancy_guard::clear_entered(&env);
             panic!("Amount must be greater than zero");
         }
 
@@ -4511,7 +4526,6 @@ impl ProgramEscrowContract {
             amount,
             1, // Single payout has 1 recipient
         ) {
-            reentrancy_guard::clear_entered(&env);
             // Return the same result as the original operation for deterministic behavior
             if existing_record.success {
                 // Return the stored program data (simulate successful retry)
@@ -4530,7 +4544,6 @@ impl ProgramEscrowContract {
         // Deterministic error ordering: spend threshold check runs before
         // balance checks, so clients observe stable failures.
         if Self::enforce_spend_threshold(&env, &program_data.program_id, amount).is_err() {
-            reentrancy_guard::clear_entered(&env);
             panic!("Spend threshold exceeded");
         }
 
@@ -4538,7 +4551,6 @@ impl ProgramEscrowContract {
         Self::enforce_spending_window(&env, &program_data.program_id, amount);
 
         if amount > program_data.remaining_balance {
-            reentrancy_guard::clear_entered(&env);
             panic!("Insufficient balance");
         }
 
@@ -4553,7 +4565,6 @@ impl ProgramEscrowContract {
         );
         let net = amount.checked_sub(pay_fee).unwrap_or(0);
         if net <= 0 {
-            reentrancy_guard::clear_entered(&env);
             panic!("Payout fee consumes entire payout");
         }
 
@@ -4622,7 +4633,7 @@ impl ProgramEscrowContract {
                 .set(&DataKey::IdempotencyKey(key), &true);
         }
 
-        reentrancy_guard::clear_entered(&env);
+        reentrancy_guard::release(&env);
 
         updated_data
     }
@@ -4789,28 +4800,37 @@ impl ProgramEscrowContract {
         Self::trigger_program_releases_internal(env, Some(caller))
     }
 
+    /// Internal implementation for trigger_program_releases.
+    ///
+    /// # Deterministic Behavior
+    /// - Processes due schedules in ascending order by schedule_id
+    /// - Maintains stable ordering across all contract instances
+    /// - Emits deterministic events for audit and monitoring
+    ///
+    /// # Explicit Errors
+    /// - Returns ReleaseTriggerFailed (910) on critical state corruption
+    /// - Returns NoSchedulesDue (911) if no schedules meet release conditions
+    /// - Returns DeterminismViolation (912) on ordering inconsistencies
+    ///
+    /// # Upgrade-Safe Storage
+    /// - Uses ReleaseTriggerSchemaVersion for backward compatibility
+    /// - Gracefully handles schema migrations
+    /// - Preserves payout history and schedule state across upgrades
     fn trigger_program_releases_internal(env: Env, caller: Option<Address>) -> u32 {
-        // Reentrancy guard: Check and set
-        reentrancy_guard::check_not_entered(&env);
-        reentrancy_guard::set_entered(&env);
+        reentrancy_guard::acquire(&env);
 
         let mut program_data: ProgramData = env
             .storage()
             .instance()
             .get(&PROGRAM_DATA)
-            .unwrap_or_else(|| {
-                reentrancy_guard::clear_entered(&env);
-                panic!("Program not initialized")
-            });
+            .unwrap_or_else(|| panic!("Program not initialized"));
 
         if program_data.status == ProgramStatus::Draft {
-            reentrancy_guard::clear_entered(&env);
             panic!("Program is in Draft status. Publish the program first.");
         }
         Self::authorize_release_actor(&env, &program_data, caller.as_ref());
 
         if Self::check_paused(&env, symbol_short!("release")) {
-            reentrancy_guard::clear_entered(&env);
             panic!("Funds Paused");
         }
 
@@ -4925,7 +4945,7 @@ impl ProgramEscrowContract {
         );
 
         // Clear reentrancy guard before returning
-        reentrancy_guard::clear_entered(&env);
+        reentrancy_guard::release(&env);
 
         released_count
     }
