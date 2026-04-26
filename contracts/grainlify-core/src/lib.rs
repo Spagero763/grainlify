@@ -5,6 +5,8 @@ pub mod commit_reveal;
 pub mod error_registry;
 pub mod errors;
 mod governance;
+pub mod multisig;
+use multisig::MultiSig;
 pub mod nonce;
 pub mod pseudo_randomness;
 pub mod strict_mode;
@@ -739,7 +741,7 @@ mod test_contract_registry;
 
 #[cfg(feature = "contract")]
 #[contract]
-pub struct GrainlifyRegistry;
+pub struct GrainlifyContract;
 #[contractimpl]
 impl GrainlifyContract {
     /// One-time initialization: set the admin and initial version. Requires `admin` auth.
@@ -786,7 +788,10 @@ impl GrainlifyContract {
             let remaining = timelock_delay.saturating_sub(elapsed);
             panic!("Timelock delay not met: {} seconds remaining", remaining);
         }
-        e.storage().instance().set(&DataKey::Admin, &admin);
+
+        let proposal = Self::load_upgrade_proposal(&env, proposal_id).expect("Proposal not found");
+        env.deployer().update_current_contract_wasm(proposal.wasm_hash);
+        env.storage().instance().remove(&DataKey::UpgradeTimelock(proposal_id));
     }
     pub fn set_addr(e: Env, n: Symbol, a: Address) {
         let adm: Address = e.storage().instance().get(&DataKey::Admin).unwrap();
@@ -1089,9 +1094,23 @@ impl GrainlifyContract {
         // [FIX-M02] Explicit error when snapshot is pruned
         let snapshot: CoreConfigSnapshot = env.storage().instance()
             .get(&DataKey::ConfigSnapshot(snapshot_id))
-            .unwrap_or_else(|| panic!("Snapshot not found or has been pruned"));
+            .unwrap_or_else(|| panic!("{}", ContractError::SnapshotPruned as u32));
 
         let current_admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+
+        // [GUARDRAIL] Prevent no-op restore to save gas
+        let current_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(0);
+        let multisig_opt = MultiSig::get_config_opt(&env);
+        let current_threshold = multisig_opt.as_ref().map(|c| c.threshold).unwrap_or(0);
+        let current_signers = multisig_opt.as_ref().map(|c| c.signers.clone()).unwrap_or(Vec::new(&env));
+
+        if snapshot.version == current_version 
+            && snapshot.admin == current_admin 
+            && snapshot.multisig_threshold == current_threshold 
+            && snapshot.multisig_signers == current_signers 
+        {
+            return;
+        }
 
         // [FIX-C02] Detect if restore would change admin — if so, require two-step confirmation
         let admin_would_change = snapshot.admin != current_admin;
@@ -1604,6 +1623,20 @@ impl GrainlifyContract {
         if MultiSig::is_contract_paused(env) {
             panic!("Contract is paused");
         }
+    }
+
+    fn load_upgrade_proposal(env: &Env, proposal_id: u64) -> Option<UpgradeProposalRecord> {
+        let wasm_hash: BytesN<32> = env.storage().instance().get(&DataKey::UpgradeProposal(proposal_id))?;
+        let proposer = env.storage().instance().get(&DataKey::UpgradeProposalProposer(proposal_id));
+        let is_cancelled = MultiSig::is_cancelled(env, proposal_id);
+        
+        Some(UpgradeProposalRecord {
+            proposal_id,
+            proposer,
+            wasm_hash,
+            expiry: 0, // Expiry details held in multisig module
+            cancelled: is_cancelled,
+        })
     }
 }
 
