@@ -51,11 +51,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "multi-token-a"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -71,11 +67,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "multi-token-b"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -155,7 +147,8 @@
                     "hi": 0,
                     "lo": 120000
                   }
-                }
+                },
+                "void"
               ]
             }
           },
@@ -203,7 +196,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           },
@@ -794,14 +788,6 @@
                       },
                       {
                         "key": {
-                          "symbol": "ReentGrd"
-                        },
-                        "val": {
-                          "bool": false
-                        }
-                      },
-                      {
-                        "key": {
                           "symbol": "RelHist"
                         },
                         "val": {
@@ -1091,6 +1077,30 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -1604,14 +1614,6 @@
                       },
                       {
                         "key": {
-                          "symbol": "ReentGrd"
-                        },
-                        "val": {
-                          "bool": false
-                        }
-                      },
-                      {
-                        "key": {
                           "symbol": "RelHist"
                         },
                         "val": {
@@ -1901,6 +1903,30 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -3344,9 +3370,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "multi-token-a"
-            }
+            "data": "void"
           }
         }
       },
@@ -3896,9 +3920,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "multi-token-b"
-            }
+            "data": "void"
           }
         }
       },
@@ -4964,7 +4986,8 @@
                     "hi": 0,
                     "lo": 120000
                   }
-                }
+                },
+                "void"
               ]
             }
           }
@@ -5659,7 +5682,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           }
