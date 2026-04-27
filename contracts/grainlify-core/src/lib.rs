@@ -1938,7 +1938,6 @@ impl GrainlifyContract {
     /// `expiry` is a ledger timestamp after which the proposal cannot be approved
     /// or executed (0 = no expiry).
     pub fn propose_upgrade(env: Env, proposer: Address, wasm_hash: BytesN<32>, expiry: u64) -> u64 {
-        Self::require_not_paused(&env);
         Self::require_not_read_only(&env);
         let proposal_id = MultiSig::propose(&env, proposer.clone(), expiry);
         env.storage().instance().set(&DataKey::UpgradeProposal(proposal_id), &wasm_hash);
@@ -1948,7 +1947,6 @@ impl GrainlifyContract {
 
     /// Approve a pending upgrade proposal. Starts the timelock when threshold is met.
     pub fn approve_upgrade(env: Env, proposal_id: u64, signer: Address) {
-        Self::require_not_paused(&env);
         MultiSig::approve(&env, proposal_id, signer);
         // Start timelock if threshold is now met and not already started
         if MultiSig::can_execute(&env, proposal_id)
@@ -2070,11 +2068,7 @@ impl GrainlifyContract {
     // Internal helpers
     // ========================================================================
 
-    fn require_not_paused(env: &Env) {
-        if MultiSig::is_contract_paused(env) {
-            panic!("Contract is paused");
-        }
-    }
+
 
     fn load_upgrade_proposal(env: &Env, proposal_id: u64) -> Option<UpgradeProposalRecord> {
         let wasm_hash: BytesN<32> = env
