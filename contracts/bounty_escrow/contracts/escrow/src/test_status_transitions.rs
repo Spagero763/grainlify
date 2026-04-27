@@ -1547,3 +1547,108 @@ fn test_execute_queued_release_applies_release_fee() {
         EscrowStatus::Released
     );
 }
+
+// ============================================================================
+// FEE ROUTING INVARIANTS TESTS (Issue #1032)
+// ============================================================================
+
+#[test]
+fn test_set_fee_routing_rejects_invalid_share_sum() {
+    let setup = TestSetup::new();
+    let bounty_id = 950;
+    let amount: i128 = 1_000;
+    let deadline = setup.env.ledger().timestamp() + 1_000;
+    let partner = Address::generate(&setup.env);
+
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+
+    // 6000 + 3000 != 10000 -> invariant violation.
+    let res = setup.escrow.try_set_fee_routing(
+        &bounty_id,
+        &setup.admin,
+        &6_000,
+        &Some(partner),
+        &3_000,
+    );
+    assert!(matches!(res, Err(Ok(Error::InvalidAmount))));
+}
+
+#[test]
+fn test_per_bounty_fee_routing_split_sums_to_total_fee() {
+    let setup = TestSetup::new();
+    let bounty_id = 951;
+    let amount: i128 = 1_001;
+    let deadline = setup.env.ledger().timestamp() + 1_000;
+    let treasury = Address::generate(&setup.env);
+    let partner = Address::generate(&setup.env);
+
+    // Configure 3.33% release fee with routing enabled.
+    setup.escrow.update_fee_config(
+        &Some(0),
+        &Some(333),
+        &Some(0),
+        &Some(0),
+        &Some(treasury.clone()),
+        &Some(true),
+    );
+
+    setup.escrow.lock_funds(&setup.depositor, &bounty_id, &amount, &deadline);
+    setup.escrow.set_fee_routing(
+        &bounty_id,
+        &treasury,
+        &7_000,
+        &Some(partner.clone()),
+        &3_000,
+    );
+    setup.escrow.release_funds(&bounty_id, &setup.contributor);
+
+    // fee = ceil(1001 * 333 / 10000) = 34
+    // treasury = floor(34 * 7000 / 10000) = 23
+    // partner  = remainder = 11
+    assert_eq!(setup.token.balance(&treasury), 23);
+    assert_eq!(setup.token.balance(&partner), 11);
+    assert_eq!(setup.token.balance(&setup.contributor), 967);
+}
+
+// ============================================================================
+// PARTICIPANT FILTER PAGINATION TESTS (Issue #1039)
+// ============================================================================
+
+#[test]
+fn test_query_whitelist_pagination_metadata() {
+    let setup = TestSetup::new();
+    let a1 = Address::generate(&setup.env);
+    let a2 = Address::generate(&setup.env);
+    let a3 = Address::generate(&setup.env);
+
+    setup.escrow.set_whitelist(&a1, &true);
+    setup.escrow.set_whitelist(&a2, &true);
+    setup.escrow.set_whitelist(&a3, &true);
+
+    let first = setup.escrow.query_whitelist(&0, &2);
+    assert_eq!(first.total, 3);
+    assert_eq!(first.offset, 0);
+    assert_eq!(first.items.len(), 2);
+    assert!(first.has_more);
+
+    let second = setup.escrow.query_whitelist(&2, &2);
+    assert_eq!(second.total, 3);
+    assert_eq!(second.offset, 2);
+    assert_eq!(second.items.len(), 1);
+    assert!(!second.has_more);
+}
+
+#[test]
+fn test_query_whitelist_limit_is_capped_to_max_page_size() {
+    let setup = TestSetup::new();
+    for _ in 0..60 {
+        setup
+            .escrow
+            .set_whitelist(&Address::generate(&setup.env), &true);
+    }
+
+    let page = setup.escrow.query_whitelist(&0, &999);
+    assert_eq!(page.total, 60);
+    assert_eq!(page.items.len(), 50);
+    assert!(page.has_more);
+}
