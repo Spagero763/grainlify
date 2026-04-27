@@ -15,16 +15,44 @@
           "description": "All error codes defined in this contract's error enum, in ascending order.",
           "items": {
             "$ref": "#/$defs/error_registry_entry"
-          }
+          },
+          "minItems": 1,
+          "uniqueItems": true
         },
         "ranges": {
           "type": "array",
-          "description": "Reserved numeric ranges for this contract's error codes.",
+          "description": "Reserved numeric ranges for this contract's error codes. Must follow established conventions: 1-99 (common), 100-199 (governance), 200-299 (escrow), 300-399 (identity), 400-499 (program_escrow), 1000+ (system).",
           "items": {
             "$ref": "#/$defs/error_code_range"
+          },
+          "minItems": 1
+        },
+        "cross_contract_validation": {
+          "type": "object",
+          "description": "Cross-contract validation configuration",
+          "properties": {
+            "allow_conflicts": {
+              "type": "boolean",
+              "description": "Whether conflicts with other contracts are allowed (default: false)",
+              "default": false
+            },
+            "conflict_resolution": {
+              "type": "string",
+              "enum": ["error", "warning", "ignore"],
+              "description": "How to handle cross-contract conflicts",
+              "default": "warning"
+            },
+            "excluded_contracts": {
+              "type": "array",
+              "description": "List of contract names to exclude from conflict checking",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         }
-      }
+      },
+      "required": ["codes", "ranges"]
     },
     "contract_name": {
       "type": "string",
@@ -188,6 +216,33 @@
           "description": "Events emitted by the contract",
           "items": {
             "$ref": "#/$defs/event"
+          }
+        },
+        "emergency_pause": {
+          "type": "object",
+          "description": "Configuration and policy for emergency pause functionality",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "blocks_upgrades": {
+              "type": "boolean"
+            }
+          }
+        },
+        "timelocked_upgrades": {
+          "type": "object",
+          "description": "Configuration and policy for timelocked upgrades",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "min_delay_seconds": {
+              "type": "integer"
+            },
+            "max_delay_seconds": {
+              "type": "integer"
+            }
           }
         },
         "snapshot_rollback": {
@@ -726,55 +781,75 @@
     "error_registry_entry": {
       "type": "object",
       "description": "A single error code entry in the registry.",
-      "required": ["code", "name"],
+      "required": ["code", "name", "range"],
       "properties": {
         "code": {
           "type": "integer",
-          "description": "Numeric discriminant used in the #[contracterror] enum.",
-          "minimum": 1
+          "description": "Numeric discriminant used in the #[contracterror] enum. Must be within designated ranges: 1-99 (common), 100-199 (governance), 200-299 (escrow), 300-399 (identity), 400-499 (program_escrow), 1000+ (system).",
+          "minimum": 1,
+          "maximum": 9999
         },
         "name": {
           "type": "string",
-          "description": "Rust variant name (e.g. 'AlreadyInitialized').",
-          "minLength": 1
+          "description": "Rust variant name (e.g. 'AlreadyInitialized'). Must match the enum variant name exactly.",
+          "minLength": 1,
+          "pattern": "^[A-Z][a-zA-Z0-9]*$"
         },
         "description": {
           "type": "string",
-          "description": "Human-readable explanation of when this error is raised."
+          "description": "Human-readable explanation of when this error is raised. Should be clear and actionable.",
+          "minLength": 10
         },
         "range": {
           "type": "string",
-          "description": "Logical range this code belongs to (e.g. 'common', 'governance', 'escrow')."
+          "description": "Logical range this code belongs to. Must be one of: common, governance, escrow, identity, program_escrow, system.",
+          "enum": ["common", "governance", "escrow", "identity", "program_escrow", "system"]
         },
         "added_in": {
           "type": "string",
           "description": "Contract version when this code was introduced.",
           "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "deprecated_in": {
+          "type": "string",
+          "description": "Contract version when this code was deprecated (if applicable).",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "security_critical": {
+          "type": "boolean",
+          "description": "Whether this error indicates a security-critical condition that should be monitored.",
+          "default": false
         }
       }
     },
     "error_code_range": {
       "type": "object",
-      "description": "A reserved numeric range for error codes in this contract.",
+      "description": "A reserved numeric range for error codes in this contract. Must follow established range conventions.",
       "required": ["name", "min", "max"],
       "properties": {
         "name": {
           "type": "string",
-          "description": "Logical name of the range (e.g. 'common', 'governance').",
-          "minLength": 1
+          "description": "Logical name of the range. Must be one of: common, governance, escrow, identity, program_escrow, system.",
+          "enum": ["common", "governance", "escrow", "identity", "program_escrow", "system"]
         },
         "min": {
           "type": "integer",
-          "description": "Inclusive lower bound.",
+          "description": "Inclusive lower bound. Must align with standard range conventions.",
           "minimum": 1
         },
         "max": {
           "type": "integer",
-          "description": "Inclusive upper bound."
+          "description": "Inclusive upper bound. Must be greater than or equal to min."
         },
         "description": {
           "type": "string",
-          "description": "What kinds of errors live in this range."
+          "description": "What kinds of errors live in this range.",
+          "minLength": 10
+        },
+        "reserved": {
+          "type": "boolean",
+          "description": "Whether this range is reserved for future use (default: false).",
+          "default": false
         }
       }
     }

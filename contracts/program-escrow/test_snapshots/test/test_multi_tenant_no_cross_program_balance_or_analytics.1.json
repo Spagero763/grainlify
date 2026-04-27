@@ -32,11 +32,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "prog-isolation-a"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -52,11 +48,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "prog-isolation-b"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -134,7 +126,8 @@
                     "hi": 0,
                     "lo": 100000
                   }
-                }
+                },
+                "void"
               ]
             }
           },
@@ -666,14 +659,6 @@
                       },
                       {
                         "key": {
-                          "symbol": "ReentGrd"
-                        },
-                        "val": {
-                          "bool": false
-                        }
-                      },
-                      {
-                        "key": {
                           "symbol": "RelHist"
                         },
                         "val": {
@@ -963,6 +948,30 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -1530,6 +1539,18 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -2562,9 +2583,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "prog-isolation-a"
-            }
+            "data": "void"
           }
         }
       },
@@ -3114,9 +3133,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "prog-isolation-b"
-            }
+            "data": "void"
           }
         }
       },
@@ -4236,7 +4253,8 @@
                     "hi": 0,
                     "lo": 100000
                   }
-                }
+                },
+                "void"
               ]
             }
           }

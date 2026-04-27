@@ -497,4 +497,217 @@ mod tests {
         assert!(errors::PROGRAM_ALREADY_EXISTS >= 400 && errors::PROGRAM_ALREADY_EXISTS < 500, "program range");
         assert!(errors::CIRCUIT_OPEN >= 1000, "circuit-breaker range");
     }
+
+    // ── Enhanced Cross-Contract Validation Tests ───────────────────────────────────
+
+    #[test]
+    fn test_no_cross_contract_conflicts_with_clean_registry() {
+        use crate::error_registry::no_cross_contract_conflicts;
+        
+        let other_registry: &[crate::error_registry::RegistryEntry] = &[
+            (1000, "OtherError"),
+            (1001, "AnotherError"),
+        ];
+        
+        assert!(
+            no_cross_contract_conflicts(other_registry),
+            "Should have no conflicts with clean registry"
+        );
+    }
+
+    #[test]
+    fn test_no_cross_contract_conflicts_detects_conflicts() {
+        use crate::error_registry::no_cross_contract_conflicts;
+        
+        let conflicting_registry: &[crate::error_registry::RegistryEntry] = &[
+            (1, "ConflictingError"), // Conflicts with AlreadyInitialized
+            (1000, "OtherError"),
+        ];
+        
+        assert!(
+            !no_cross_contract_conflicts(conflicting_registry),
+            "Should detect conflict with error code 1"
+        );
+    }
+
+    #[test]
+    fn test_no_cross_contract_conflicts_empty_registry() {
+        use crate::error_registry::no_cross_contract_conflicts;
+        
+        let empty_registry: &[crate::error_registry::RegistryEntry] = &[];
+        
+        assert!(
+            no_cross_contract_conflicts(empty_registry),
+            "Empty registry should have no conflicts"
+        );
+    }
+
+    #[test]
+    fn test_validate_ranges_all_valid() {
+        use crate::error_registry::validate_ranges;
+        
+        assert!(
+            validate_ranges(),
+            "GRAINLIFY_CORE_REGISTRY should have all valid ranges"
+        );
+    }
+
+    #[test]
+    fn test_get_range_category_all_codes() {
+        use crate::error_registry::get_range_category;
+        
+        // Test common range
+        assert_eq!(get_range_category(1), "common");
+        assert_eq!(get_range_category(50), "common");
+        assert_eq!(get_range_category(99), "common");
+        
+        // Test governance range
+        assert_eq!(get_range_category(100), "governance");
+        assert_eq!(get_range_category(150), "governance");
+        assert_eq!(get_range_category(199), "governance");
+        
+        // Test escrow range
+        assert_eq!(get_range_category(200), "escrow");
+        assert_eq!(get_range_category(250), "escrow");
+        assert_eq!(get_range_category(299), "escrow");
+        
+        // Test identity range
+        assert_eq!(get_range_category(300), "identity");
+        assert_eq!(get_range_category(350), "identity");
+        assert_eq!(get_range_category(399), "identity");
+        
+        // Test program escrow range
+        assert_eq!(get_range_category(400), "program_escrow");
+        assert_eq!(get_range_category(450), "program_escrow");
+        assert_eq!(get_range_category(499), "program_escrow");
+        
+        // Test system range
+        assert_eq!(get_range_category(1000), "system");
+        assert_eq!(get_range_category(5000), "system");
+        assert_eq!(get_range_category(9999), "system");
+        
+        // Test unknown codes
+        assert_eq!(get_range_category(0), "unknown");
+        assert_eq!(get_range_category(100), "governance"); // Boundary
+        assert_eq!(get_range_category(999), "unknown");
+    }
+
+    #[test]
+    fn test_registry_entries_have_correct_ranges() {
+        use crate::error_registry::get_range_category;
+        
+        for (code, name) in GRAINLIFY_CORE_REGISTRY {
+            let category = get_range_category(*code);
+            assert_ne!(
+                category, "unknown",
+                "Error code {code} ({name}) should have a valid range category"
+            );
+            
+            // Verify the category makes sense for the error name
+            match *code {
+                1..=99 => assert_eq!(category, "common"),
+                100..=199 => assert_eq!(category, "governance"),
+                200..=299 => assert_eq!(category, "escrow"),
+                300..=399 => assert_eq!(category, "identity"),
+                400..=499 => assert_eq!(category, "program_escrow"),
+                1000..=9999 => assert_eq!(category, "system"),
+                _ => panic!("Error code {code} ({name}) is out of all valid ranges"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_registry_coverage_completeness() {
+        // Ensure all error codes from ContractError are in the registry
+        let contract_codes = [
+            ContractError::AlreadyInitialized as u32,
+            ContractError::NotInitialized as u32,
+            ContractError::NotAdmin as u32,
+            ContractError::ThresholdNotMet as u32,
+            ContractError::ProposalNotFound as u32,
+            ContractError::MigrationCommitmentNotFound as u32,
+            ContractError::MigrationHashMismatch as u32,
+            ContractError::TimelockDelayTooHigh as u32,
+            ContractError::SnapshotRestoreAdminPending as u32,
+            ContractError::SnapshotPruned as u32,
+        ];
+        
+        for code in contract_codes {
+            assert!(
+                is_registered(code),
+                "ContractError with code {code} must be in the registry"
+            );
+        }
+        
+        // Ensure registry doesn't have extra codes
+        assert_eq!(
+            registered_count(),
+            contract_codes.len(),
+            "Registry should have exactly the same number of entries as ContractError variants"
+        );
+    }
+
+    #[test]
+    fn test_error_code_sequentiality_within_ranges() {
+        // While not strictly required, error codes should be reasonably sequential
+        // within their ranges to avoid gaps that could cause confusion
+        
+        let mut common_codes: Vec<u32> = Vec::new();
+        let mut governance_codes: Vec<u32> = Vec::new();
+        
+        for (code, _) in GRAINLIFY_CORE_REGISTRY {
+            if *code <= 99 {
+                common_codes.push(*code);
+            } else if *code <= 199 {
+                governance_codes.push(*code);
+            }
+        }
+        
+        // Sort to check for large gaps
+        common_codes.sort();
+        governance_codes.sort();
+        
+        // Check that there are no huge gaps in the common range
+        for i in 1..common_codes.len() {
+            let gap = common_codes[i] - common_codes[i-1];
+            assert!(
+                gap <= 10, // Allow some gaps but not huge ones
+                "Large gap of {gap} in common error codes between {} and {}",
+                common_codes[i-1], common_codes[i]
+            );
+        }
+        
+        // Similar check for governance range
+        for i in 1..governance_codes.len() {
+            let gap = governance_codes[i] - governance_codes[i-1];
+            assert!(
+                gap <= 10,
+                "Large gap of {gap} in governance error codes between {} and {}",
+                governance_codes[i-1], governance_codes[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_names_follow_conventions() {
+        for (code, name) in GRAINLIFY_CORE_REGISTRY {
+            // Names should be PascalCase
+            assert!(
+                name.chars().next().unwrap().is_uppercase(),
+                "Error code {code} name '{name}' should start with uppercase"
+            );
+            
+            // Names should not contain underscores (use PascalCase instead)
+            assert!(
+                !name.contains('_'),
+                "Error code {code} name '{name}' should use PascalCase, not underscores"
+            );
+            
+            // Names should be descriptive
+            assert!(
+                name.len() >= 5,
+                "Error code {code} name '{name}' should be at least 5 characters"
+            );
+        }
+    }
 }

@@ -32,11 +32,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "hack-2026"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -86,7 +82,8 @@
                     "hi": 0,
                     "lo": 100000
                   }
-                }
+                },
+                "void"
               ]
             }
           },
@@ -111,7 +108,8 @@
                     "hi": 0,
                     "lo": 200000
                   }
-                }
+                },
+                "void"
               ]
             }
           },
@@ -136,7 +134,8 @@
                     "hi": 0,
                     "lo": 300000
                   }
-                }
+                },
+                "void"
               ]
             }
           },
@@ -725,14 +724,6 @@
                       },
                       {
                         "key": {
-                          "symbol": "ReentGrd"
-                        },
-                        "val": {
-                          "bool": false
-                        }
-                      },
-                      {
-                        "key": {
                           "symbol": "RelHist"
                         },
                         "val": {
@@ -1022,6 +1013,30 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReentrancyGuard"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -2127,9 +2142,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "hack-2026"
-            }
+            "data": "void"
           }
         }
       },
@@ -2671,7 +2684,8 @@
                     "hi": 0,
                     "lo": 100000
                   }
-                }
+                },
+                "void"
               ]
             }
           }
@@ -3041,7 +3055,8 @@
                     "hi": 0,
                     "lo": 200000
                   }
-                }
+                },
+                "void"
               ]
             }
           }
@@ -3442,7 +3457,8 @@
                     "hi": 0,
                     "lo": 300000
                   }
-                }
+                },
+                "void"
               ]
             }
           }

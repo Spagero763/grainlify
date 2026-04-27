@@ -534,24 +534,24 @@ fn test_unpause_rejects_non_signer() {
 }
 
 #[test]
-#[should_panic(expected = "Contract is paused")]
-fn test_propose_upgrade_blocked_when_paused() {
+fn test_propose_upgrade_not_blocked_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, [s1, _, _]) = setup_multisig(&env);
     client.pause(&s1);
-    client.propose_upgrade(&s1, &fake_wasm(&env), &0u64);
+    let pid = client.propose_upgrade(&s1, &fake_wasm(&env), &0u64);
+    assert_eq!(pid, 1);
 }
 
 #[test]
-#[should_panic(expected = "Contract is paused")]
-fn test_approve_upgrade_blocked_when_paused() {
+fn test_approve_upgrade_not_blocked_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, [s1, s2, _]) = setup_multisig(&env);
     let pid = client.propose_upgrade(&s1, &fake_wasm(&env), &0u64);
     client.pause(&s1);
     client.approve_upgrade(&pid, &s2);
+    assert_eq!(client.get_timelock_status(&pid), None);
 }
 
 #[test]

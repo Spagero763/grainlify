@@ -94,7 +94,7 @@ pub fn emit_bounty_initialized(env: &Env, event: BountyEscrowInitialized) {
 
 pub fn emit_admin_proposed(e: &Env, old: Address, new: Address) {
     e.events().publish(
-        (symbol_short!("admin_prop"),),
+        (symbol_short!("adm_prop"),),
         (old, new),
     );
 }
@@ -106,9 +106,9 @@ pub fn emit_admin_transferred(e: &Env, old: Address, new: Address) {
     );
 }
 
-pub fn emit_admin_transfer_cancelled(e: &Env, admin: Address) {
+pub fn emit_admin_transfer_cancelled_v1(e: &Env, admin: Address) {
     e.events().publish(
-        (symbol_short!("admin_cancel"),),
+        (symbol_short!("adm_cncl2"),),
         (admin,),
     );
 }
@@ -1982,5 +1982,40 @@ pub struct ClaimWindowExpired {
 
 pub fn emit_claim_window_expired(env: &Env, event: ClaimWindowExpired) {
     let topics = (symbol_short!("clm_exp"), event.bounty_id);
+    env.events().publish(topics, event);
+}
+
+// ============================================================================
+// Maintenance Mode Schema Version Event — CEI + Reentrancy Guard Hardening
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaintenanceModeSchemaVersionSet {
+    pub version: u32,
+    pub schema_version: u32,
+    pub set_by: soroban_sdk::Address,
+    pub timestamp: u64,
+}
+
+pub fn emit_maintenance_mode_schema_version_set(env: &Env, event: MaintenanceModeSchemaVersionSet) {
+    let topics = (symbol_short!("mm_schema"),);
+    env.events().publish(topics, event);
+}
+
+// ============================================================================
+// Reentrancy Guard Audit Event — emitted when guard is acquired/released
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReentrancyGuardAcquired {
+    pub version: u32,
+    pub function: soroban_sdk::Symbol,
+    pub timestamp: u64,
+}
+
+pub fn emit_reentrancy_guard_acquired(env: &Env, event: ReentrancyGuardAcquired) {
+    let topics = (symbol_short!("rg_acq"),);
     env.events().publish(topics, event);
 }

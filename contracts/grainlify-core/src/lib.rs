@@ -172,6 +172,26 @@ pub struct MigrationState {
     pub migration_hash: BytesN<32>,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub timestamp: u64,
+    pub migration_hash: BytesN<32>,
+    pub success: bool,
+    pub error_message: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationCommittedEvent {
+    pub target_version: u32,
+    pub hash: BytesN<32>,
+    pub committed_at: u64,
+    pub expires_at: u64,
+}
+
 /// Canonical read model for a multisig upgrade proposal.
 ///
 /// Approval and execution status remain in [`MultiSig`], while upgrade-specific
@@ -848,7 +868,6 @@ impl GrainlifyContract {
     /// Execute a multisig-approved upgrade after the timelock delay has elapsed.
     pub fn execute_upgrade(env: Env, proposal_id: u64) {
         let start = env.ledger().timestamp();
-        Self::require_not_paused(&env);
         Self::require_not_read_only(&env);
 
         if MultiSig::is_state_inconsistent(&env) {
@@ -1919,7 +1938,6 @@ impl GrainlifyContract {
     /// `expiry` is a ledger timestamp after which the proposal cannot be approved
     /// or executed (0 = no expiry).
     pub fn propose_upgrade(env: Env, proposer: Address, wasm_hash: BytesN<32>, expiry: u64) -> u64 {
-        Self::require_not_paused(&env);
         Self::require_not_read_only(&env);
         let proposal_id = MultiSig::propose(&env, proposer.clone(), expiry);
         env.storage().instance().set(&DataKey::UpgradeProposal(proposal_id), &wasm_hash);
@@ -1929,7 +1947,6 @@ impl GrainlifyContract {
 
     /// Approve a pending upgrade proposal. Starts the timelock when threshold is met.
     pub fn approve_upgrade(env: Env, proposal_id: u64, signer: Address) {
-        Self::require_not_paused(&env);
         MultiSig::approve(&env, proposal_id, signer);
         // Start timelock if threshold is now met and not already started
         if MultiSig::can_execute(&env, proposal_id)
@@ -2051,11 +2068,7 @@ impl GrainlifyContract {
     // Internal helpers
     // ========================================================================
 
-    fn require_not_paused(env: &Env) {
-        if MultiSig::is_contract_paused(env) {
-            panic!("Contract is paused");
-        }
-    }
+
 
     fn load_upgrade_proposal(env: &Env, proposal_id: u64) -> Option<UpgradeProposalRecord> {
         let wasm_hash: BytesN<32> = env

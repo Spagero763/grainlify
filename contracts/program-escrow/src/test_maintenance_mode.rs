@@ -41,7 +41,7 @@ fn setup_program_with_admin<'a>(
         &None,
         &None,
     );
-    client.publish_program(&program_id);
+    client.publish_program();
     (client, admin, payout_key, token_client)
 }
 
@@ -116,7 +116,7 @@ fn test_release_and_refund_allowed_in_maintenance_mode() {
 
     // Payout should succeed (not panicking)
     let recipient = Address::generate(&env);
-    contract.single_payout(&recipient, &1000);
+    contract.single_payout(&recipient, &1000, &None);
 
     assert_eq!(token.balance(&recipient), 1000);
 }
