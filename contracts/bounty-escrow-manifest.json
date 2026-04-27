@@ -82,6 +82,16 @@
           "Added TimelockNotElapsed (53) and ReleaseAlreadyQueued (54) error codes",
           "Added get_high_value_config_schema_version view for upgrade safety checks"
         ]
+      },
+      {
+        "version": "2.6.0",
+        "release_date": "2026-04-27",
+        "changes": [
+          "Issue #1032: reinforced fee routing invariants with explicit status-transition coverage for invalid share sums and exact fee split accounting",
+          "Issue #1036: validated runtime batch size cap semantics in status-transition suite to protect independent lock/release limits",
+          "Issue #1039: added participant filter pagination status-transition coverage for deterministic total/offset/has_more semantics and hard page-size cap behavior",
+          "Preserved upgrade-safe storage semantics for FeeRoutingSchemaVersion, BatchSizeCaps, and ParticipantListSchemaVersion"
+        ]
       }
     ]
   },
