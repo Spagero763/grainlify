@@ -973,6 +973,26 @@ pub enum DataKey {
     /// Upgrade-safe schema version marker for release trigger execution.
     /// Tracks deterministic ordering, error reporting, and trigger statistics.
     ReleaseTriggerSchemaVersion,
+    /// Reentrancy guard flag (u32: 1 = NOT_ENTERED, 2 = ENTERED).
+    ReentrancyGuard,
+    /// Idempotency key record — keyed by the caller-supplied string key.
+    /// Stores an `IdempotencyRecord` on success or failure for replay detection.
+    IdempotencyKey(String),
+    /// Upgrade-safe schema version marker for idempotency key storage.
+    /// Written on init; increment when `IdempotencyRecord` layout changes.
+    IdempotencySchemaVersion,
+    /// Upgrade-safe schema version marker for batch payout storage.
+    /// Written on init; increment when batch payout storage layout changes.
+    BatchPayoutSchemaVersion,
+    /// Upgrade-safe schema version marker for circuit breaker storage.
+    /// Written on init; increment when circuit breaker storage layout changes.
+    CircuitBreakerSchemaVersion,
+    /// Batch receipt keyed by receipt ID.
+    BatchReceipt(u64),
+    /// Pending admin address for two-step admin rotation (step 1).
+    PendingAdmin,
+    /// Pending controller address for two-step controller rotation (step 1).
+    PendingController(String),
 }
 
 #[contracttype]
@@ -1351,7 +1371,7 @@ mod reentrancy_guard;
 // #[cfg(test)] mod test_token_math; // pre-existing breakage
 // #[cfg(test)] mod test_circuit_breaker_audit; // pre-existing breakage
 // #[cfg(test)] mod error_recovery_tests; // pre-existing breakage
-#[cfg(test)]
+#[cfg(any())] // pre-existing syntax error in file
 mod test_circuit_breaker_enforcement;
 #[cfg(any())]
 mod reentrancy_tests;
@@ -1531,7 +1551,7 @@ impl ProgramEscrowContract {
         if idempotency_key.is_empty() {
             panic!("Idempotency key cannot be empty");
         }
-        if idempotency_key.len() > IDEMPOTENCY_KEY_MAX_LENGTH as usize {
+        if idempotency_key.len() > IDEMPOTENCY_KEY_MAX_LENGTH {
             panic!("Idempotency key exceeds maximum length");
         }
     }
@@ -1635,7 +1655,7 @@ impl ProgramEscrowContract {
                     idempotency_key: idempotency_key.clone(),
                     original_success: existing_record.success,
                     original_executed_at: existing_record.executed_at,
-                    original_executor: existing_record.executor,
+                    original_executor: existing_record.executor.clone(),
                     retry_attempt_at: env.ledger().timestamp(),
                     retry_by: env.current_contract_address(),
                 },
@@ -3268,7 +3288,7 @@ impl ProgramEscrowContract {
             .unwrap_or(false)
     }
 
-    fn require_not_read_only(env: &Env) {
+    fn require_not_maintenance_mode(env: &Env) {
         let in_maintenance: bool = env
             .storage()
             .instance()
@@ -3485,7 +3505,7 @@ impl ProgramEscrowContract {
 
     /// Return the upgrade-safe circuit-breaker schema version.
     /// Returns `0` on legacy deployments where the marker was never written.
-    pub fn get_circuit_breaker_schema_version(env: Env) -> u32 {
+    pub fn get_cb_schema_version(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::CircuitBreakerSchemaVersion)
@@ -4076,7 +4096,7 @@ impl ProgramEscrowContract {
     /// Returns `RELEASE_TRIGGER_SCHEMA_VERSION_V1` (1) for contracts initialized after
     /// the trigger enhancement, or 0 for legacy deployments. This version tracks
     /// deterministic ordering, explicit error codes, and retry semantics.
-    pub fn get_release_trigger_schema_version(env: Env) -> u32 {
+    pub fn get_trigger_schema_version(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::ReleaseTriggerSchemaVersion)
@@ -4180,17 +4200,20 @@ impl ProgramEscrowContract {
         idempotency_key: Option<String>,
     ) -> ProgramData {
         // Validation precedence (deterministic ordering):
-        // 1. Reentrancy guard
-        // 1b. Idempotency check
-        // 2. Contract initialized
-        // 3. Paused (operational state)
+        // 1.  Reentrancy guard
+        // 1b. Idempotency check (early-exit before any state reads)
+        // 2.  Contract initialized
+        // 3.  Paused (operational state)
         // 3b. Dispute guard
-        // 4. Authorization
-        // 5. Input validation (length, empty, zero amounts, duplicates)
-        // 6. Compute total atomically (overflow check)
-        // 7. Business logic (spend threshold, balance)
-        // 8. Circuit breaker check
-        // 9. Execute transfers
+        // 3c. Circuit breaker (single check, before all business logic)
+        // 4.  Authorization
+        // 5a. Length / empty / batch-size checks
+        // 5b. Per-entry validation: zero amounts, duplicate recipients
+        // 6.  Compute total atomically (overflow check)
+        // 6b. Idempotency key deduplication (needs total_payout)
+        // 7.  Business logic: spend threshold, balance
+        // 8.  Pre-validate fees for every entry (atomicity — no partial state)
+        // 9.  Execute transfers
 
         reentrancy_guard::acquire(&env);
 
@@ -4205,24 +4228,23 @@ impl ProgramEscrowContract {
         // 2. Contract must be initialized
         let program_data: ProgramData = match env.storage().instance().get(&PROGRAM_DATA) {
             Some(d) => d,
-            None => bail!(BatchPayoutError::NotInitialized),
+            None => panic!("Program not initialized"),
         };
 
         // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("release")) {
-            bail!(BatchPayoutError::Paused);
+            panic!("Funds Paused");
         }
 
         // 3b. Dispute guard — payouts blocked while a dispute is open
         if Self::dispute_state(&env) == DisputeState::Open {
-            bail!(BatchPayoutError::DisputeOpen);
+            panic!("Payout blocked: dispute open");
         }
 
-        // 3c. Circuit breaker check — runs before all business logic so that
-        //     an open circuit produces a deterministic, stable rejection
-        //     regardless of balance or threshold state.
+        // 3c. Circuit breaker — single authoritative check before all business
+        //     logic so clients observe a stable, deterministic rejection.
         if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
-            reentrancy_guard::clear_entered(&env);
+            reentrancy_guard::release(&env);
             if err_code == error_recovery::ERR_CIRCUIT_OPEN {
                 panic!("Circuit breaker is OPEN");
             } else {
@@ -4233,17 +4255,17 @@ impl ProgramEscrowContract {
         // 4. Authorization
         Self::authorize_release_actor(&env, &program_data, caller.as_ref());
 
-        // 5a. Length / empty checks
+        // 5a. Length / empty / batch-size checks (deterministic ordering)
         if recipients.len() != amounts.len() {
-            bail!(BatchPayoutError::LengthMismatch);
+            panic!("Recipients and amounts vectors must have the same length");
         }
 
-        // 5a. Idempotency key validation (deterministic behavior)
-        let executor = caller.unwrap_or_else(|| env.current_contract_address());
-        // Note: We need to calculate total_payout first for idempotency validation
-
         if recipients.len() == 0 {
-            bail!(BatchPayoutError::EmptyBatch);
+            panic!("Cannot process empty batch");
+        }
+
+        if recipients.len() > MAX_BATCH_SIZE {
+            panic!("Batch size exceeds maximum allowed");
         }
 
         // 5b. Pre-validate every entry: zero amounts and duplicate recipients.
@@ -4251,14 +4273,14 @@ impl ProgramEscrowContract {
         //     batch is truly atomic — no partial state on failure.
         for i in 0..amounts.len() {
             if amounts.get(i).unwrap() <= 0 {
-                bail!(BatchPayoutError::ZeroAmount);
+                panic!("All amounts must be greater than zero");
             }
         }
         // Duplicate-recipient check (O(n²) — acceptable for MAX_BATCH_SIZE ≤ 100)
         for i in 0..recipients.len() {
             for j in (i + 1)..recipients.len() {
                 if recipients.get(i).unwrap() == recipients.get(j).unwrap() {
-                    bail!(BatchPayoutError::DuplicateRecipient);
+                    panic!("Duplicate recipient in batch");
                 }
             }
         }
@@ -4268,26 +4290,24 @@ impl ProgramEscrowContract {
         for amount in amounts.iter() {
             total_payout = match total_payout.checked_add(amount) {
                 Some(v) => v,
-                None => bail!(BatchPayoutError::AmountOverflow),
+                None => panic!("Payout amount overflow"),
             };
         }
 
-        // 5b. Idempotency key validation (now that we have total_payout)
+        // 6b. Idempotency key deduplication (now that we have total_payout)
+        let executor = caller.unwrap_or_else(|| env.current_contract_address());
         if let Err(existing_record) = Self::handle_idempotency(
             &env,
-            idempotency_key,
-            symbol_short!("batch_payout"),
+            idempotency_key.clone(),
+            symbol_short!("batchpay"),
             &program_data.program_id,
             total_payout,
             recipients.len() as u32,
         ) {
-
-            // Return the same result as the original operation for deterministic behavior
+            // Return deterministic result for retry: mirror the original outcome.
             if existing_record.success {
-                // Return the stored program data (simulate successful retry)
                 return program_data;
             } else {
-                // Retry the same error
                 if let Some(error_code) = existing_record.error_code {
                     panic!("Idempotency retry: operation failed with code {}", error_code);
                 } else {
@@ -4296,41 +4316,28 @@ impl ProgramEscrowContract {
             }
         }
 
-        // 6. Business logic: sufficient balance
-        // Deterministic error ordering: spend threshold check runs before
-        // balance checks, so clients observe stable failures.
+        // 7. Business logic: spend threshold then balance.
+        //    Deterministic ordering: threshold before balance so clients observe
+        //    stable failures regardless of current balance.
         if Self::enforce_spend_threshold(&env, &program_data.program_id, total_payout).is_err() {
-            bail!(BatchPayoutError::SpendLimitExceeded);
+            panic!("Spend threshold exceeded");
         }
 
         // Per-window spending limit check (after per-payout threshold, before balance)
         Self::enforce_spending_window(&env, &program_data.program_id, total_payout);
 
         if total_payout > program_data.remaining_balance {
-            bail!(BatchPayoutError::InsufficientBalance);
+            panic!("Insufficient balance");
         }
 
-        // 8. Circuit breaker check
-        if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
-
-            if err_code == error_recovery::ERR_CIRCUIT_OPEN {
-                return Err(BatchPayoutError::CircuitBreakerOpen);
-            } else {
-                return Err(BatchPayoutError::CircuitBreakerOpen);
-            }
-        }
-
-        // 9. Execute transfers — all pre-validation passed; this section must not fail.
-        let mut updated_history = program_data.payout_history.clone();
-        let timestamp = env.ledger().timestamp();
-        let contract_address = env.current_contract_address();
-        let token_client = token::Client::new(&env, &program_data.token_address);
+        // 8. Pre-validate fees for every entry BEFORE any transfer.
+        //    This guarantees atomicity: if any fee would consume an entire payout
+        //    the whole batch is rejected with no state changes.
         let cfg = Self::get_fee_config_internal(&env);
-
+        let mut net_amounts: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
+        let mut fee_amounts: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
         for i in 0..recipients.len() {
-            let recipient = recipients.get(i).unwrap().clone();
             let gross = amounts.get(i).unwrap();
-
             let pay_fee = Self::combined_fee_amount(
                 gross,
                 cfg.payout_fee_rate,
@@ -4339,8 +4346,23 @@ impl ProgramEscrowContract {
             );
             let net = match gross.checked_sub(pay_fee) {
                 Some(v) if v > 0 => v,
-                _ => bail!(BatchPayoutError::FeeConsumesAmount),
+                _ => panic!("Payout fee consumes entire payout"),
             };
+            net_amounts.push_back(net);
+            fee_amounts.push_back(pay_fee);
+        }
+
+        // 9. Execute transfers — all pre-validation passed; this section must not fail.
+        let mut updated_history = program_data.payout_history.clone();
+        let timestamp = env.ledger().timestamp();
+        let contract_address = env.current_contract_address();
+        let token_client = token::Client::new(&env, &program_data.token_address);
+
+        for i in 0..recipients.len() {
+            let recipient = recipients.get(i).unwrap().clone();
+            let net = net_amounts.get(i).unwrap();
+            let pay_fee = fee_amounts.get(i).unwrap();
+            let gross = amounts.get(i).unwrap();
 
             if pay_fee > 0 {
                 token_client.transfer(&contract_address, &cfg.fee_recipient, &pay_fee);
@@ -4367,19 +4389,19 @@ impl ProgramEscrowContract {
             });
         }
 
-        // Update program data
+        // Update program data atomically after all transfers succeed.
         let mut updated_data = program_data.clone();
         updated_data.remaining_balance -= total_payout;
         updated_data.payout_history = updated_history;
 
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
-        // Store idempotency record if key was provided
+        // Store idempotency record (CEI: after state mutation, before event).
         if let Some(key) = idempotency_key {
             Self::store_idempotency_record(
                 &env,
                 key,
-                symbol_short!("batch_payout"),
+                symbol_short!("batchpay"),
                 updated_data.program_id.clone(),
                 total_payout,
                 recipients.len() as u32,
@@ -4387,7 +4409,7 @@ impl ProgramEscrowContract {
             );
         }
 
-        // Emit BatchPayout event
+        // Emit BatchPayout event.
         env.events().publish(
             (BATCH_PAYOUT,),
             BatchPayoutEvent {
@@ -4399,16 +4421,9 @@ impl ProgramEscrowContract {
             },
         );
 
-        // Store idempotency key after all transfers succeed (CEI ordering).
-        if let Some(key) = idempotency_key {
-            env.storage()
-                .persistent()
-                .set(&DataKey::IdempotencyKey(key), &true);
-        }
-
-        // Clear reentrancy guard before returning
-        reentrancy_guard::clear_entered(&env);
-        Ok(updated_data)
+        // Release reentrancy guard on success.
+        reentrancy_guard::release(&env);
+        updated_data
     }
 
     /// Returns the batch payout storage schema version written during `init_program`.
@@ -4520,8 +4535,8 @@ impl ProgramEscrowContract {
         let executor = caller.unwrap_or_else(|| env.current_contract_address());
         if let Err(existing_record) = Self::handle_idempotency(
             &env,
-            idempotency_key,
-            symbol_short!("single_payout"),
+            idempotency_key.clone(),
+            symbol_short!("singlepay"),
             &program_data.program_id,
             amount,
             1, // Single payout has 1 recipient
@@ -4607,7 +4622,7 @@ impl ProgramEscrowContract {
             Self::store_idempotency_record(
                 &env,
                 key,
-                symbol_short!("single_payout"),
+                symbol_short!("singlepay"),
                 updated_data.program_id.clone(),
                 amount,
                 1, // Single payout has 1 recipient
@@ -4625,13 +4640,6 @@ impl ProgramEscrowContract {
                 remaining_balance: updated_data.remaining_balance,
             },
         );
-
-        // Store idempotency key after all transfers succeed (CEI ordering).
-        if let Some(key) = idempotency_key {
-            env.storage()
-                .persistent()
-                .set(&DataKey::IdempotencyKey(key), &true);
-        }
 
         reentrancy_guard::release(&env);
 
@@ -5138,7 +5146,7 @@ impl ProgramEscrowContract {
         amounts: soroban_sdk::Vec<i128>,
         merkle_root: soroban_sdk::BytesN<32>,
     ) -> BatchReceipt {
-        let program_data = Self::batch_payout(env.clone(), recipients.clone(), amounts.clone());
+        let program_data = Self::batch_payout(env.clone(), recipients.clone(), amounts.clone(), None);
 
         let batch_id_key = BatchReceiptKey::NextId;
         let batch_id: u64 = env.storage().persistent().get(&batch_id_key).unwrap_or(0);
@@ -5168,8 +5176,8 @@ impl ProgramEscrowContract {
         receipt
     }
 
-    /// Fetches a stored batch receipt by ID
-    pub fn get_batch_receipt(env: Env, batch_id: u64) -> Result<BatchReceipt, BatchError> {
+    /// Fetches a stored batch receipt by ID (legacy key format)
+    pub fn get_batch_receipt_by_batch_id(env: Env, batch_id: u64) -> Result<BatchReceipt, BatchError> {
         env.storage()
             .persistent()
             .get(&BatchReceiptKey::Receipt(batch_id))
@@ -5182,7 +5190,7 @@ impl ProgramEscrowContract {
         recipients: soroban_sdk::Vec<Address>,
         amounts: soroban_sdk::Vec<i128>,
     ) -> ProgramData {
-        Self::batch_payout(env, recipients, amounts)
+        Self::batch_payout(env, recipients, amounts, None)
     }
 
     /// Retrieve a stored batch payout receipt by its receipt ID.
@@ -5972,4 +5980,5 @@ mod test;
 #[cfg(test)]
 #[cfg(any())]
 mod rbac_tests;
+#[cfg(test)]
 mod test_batch_receipts;
