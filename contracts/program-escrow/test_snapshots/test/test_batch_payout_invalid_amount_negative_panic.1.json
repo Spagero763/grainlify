@@ -32,11 +32,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "hack-2026"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -673,6 +669,18 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -1460,9 +1468,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "hack-2026"
-            }
+            "data": "void"
           }
         }
       },
@@ -2012,7 +2018,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           }
@@ -2035,7 +2042,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'All amounts must be greater than zero' from contract function 'Symbol(obj#899)'"
+                  "string": "caught panic 'All amounts must be greater than zero' from contract function 'Symbol(obj#883)'"
                 },
                 {
                   "vec": [
@@ -2053,7 +2060,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           }
@@ -2129,7 +2137,8 @@
                           }
                         }
                       ]
-                    }
+                    },
+                    "void"
                   ]
                 }
               ]
