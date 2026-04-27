@@ -975,21 +975,24 @@ pub enum DataKey {
     ReleaseTriggerSchemaVersion,
     /// Reentrancy guard flag (u32: 1 = NOT_ENTERED, 2 = ENTERED).
     ReentrancyGuard,
-    /// Pending admin address for two-step admin rotation (step 1).
-    PendingAdmin,
-    /// Pending controller address for two-step controller rotation (step 1).
-    /// Keyed by program_id so each program has an independent rotation slot.
-    PendingController(String),
     /// Idempotency key record — keyed by the caller-supplied string key.
+    /// Stores an `IdempotencyRecord` on success or failure for replay detection.
     IdempotencyKey(String),
     /// Upgrade-safe schema version marker for idempotency key storage.
+    /// Written on init; increment when `IdempotencyRecord` layout changes.
     IdempotencySchemaVersion,
     /// Upgrade-safe schema version marker for batch payout storage.
+    /// Written on init; increment when batch payout storage layout changes.
     BatchPayoutSchemaVersion,
     /// Upgrade-safe schema version marker for circuit breaker storage.
+    /// Written on init; increment when circuit breaker storage layout changes.
     CircuitBreakerSchemaVersion,
     /// Batch receipt keyed by receipt ID.
     BatchReceipt(u64),
+    /// Pending admin address for two-step admin rotation (step 1).
+    PendingAdmin,
+    /// Pending controller address for two-step controller rotation (step 1).
+    PendingController(String),
 }
 
 #[contracttype]
@@ -4198,18 +4201,19 @@ impl ProgramEscrowContract {
     ) -> ProgramData {
         // Validation precedence (deterministic ordering):
         // 1.  Reentrancy guard
-        // 1b. Idempotency early-exit
+        // 1b. Idempotency check (early-exit before any state reads)
         // 2.  Contract initialized
-        // 3.  Paused
+        // 3.  Paused (operational state)
         // 3b. Dispute guard
-        // 3c. Circuit breaker (single check)
+        // 3c. Circuit breaker (single check, before all business logic)
         // 4.  Authorization
-        // 5a. Length / empty checks
-        // 5b. Per-entry: zero amounts, duplicate recipients
-        // 6.  Compute total (overflow check)
-        // 6b. Idempotency deduplication
-        // 7.  Spend threshold + balance
-        // 8.  Execute transfers
+        // 5a. Length / empty / batch-size checks
+        // 5b. Per-entry validation: zero amounts, duplicate recipients
+        // 6.  Compute total atomically (overflow check)
+        // 6b. Idempotency key deduplication (needs total_payout)
+        // 7.  Business logic: spend threshold, balance
+        // 8.  Pre-validate fees for every entry (atomicity — no partial state)
+        // 9.  Execute transfers
 
         reentrancy_guard::acquire(&env);
 
@@ -4219,11 +4223,11 @@ impl ProgramEscrowContract {
             }
         }
 
-        let program_data: ProgramData = env
-            .storage()
-            .instance()
-            .get(&PROGRAM_DATA)
-            .unwrap_or_else(|| panic!("Program not initialized"));
+        // 2. Contract must be initialized
+        let program_data: ProgramData = match env.storage().instance().get(&PROGRAM_DATA) {
+            Some(d) => d,
+            None => panic!("Program not initialized"),
+        };
 
         if Self::check_paused(&env, symbol_short!("release")) {
             panic!("Funds Paused");
@@ -4233,6 +4237,8 @@ impl ProgramEscrowContract {
             panic!("Payout blocked: dispute open");
         }
 
+        // 3c. Circuit breaker — single authoritative check before all business
+        //     logic so clients observe a stable, deterministic rejection.
         if let Err(err_code) = error_recovery::check_and_allow_with_thresholds(&env) {
             reentrancy_guard::release(&env);
             if err_code == error_recovery::ERR_CIRCUIT_OPEN {
@@ -4244,11 +4250,17 @@ impl ProgramEscrowContract {
 
         Self::authorize_release_actor(&env, &program_data, caller.as_ref());
 
+        // 5a. Length / empty / batch-size checks (deterministic ordering)
         if recipients.len() != amounts.len() {
             panic!("Recipients and amounts vectors must have the same length");
         }
+
         if recipients.len() == 0 {
             panic!("Cannot process empty batch");
+        }
+
+        if recipients.len() > MAX_BATCH_SIZE {
+            panic!("Batch size exceeds maximum allowed");
         }
 
         for i in 0..amounts.len() {
@@ -4266,11 +4278,13 @@ impl ProgramEscrowContract {
 
         let mut total_payout: i128 = 0;
         for amount in amounts.iter() {
-            total_payout = total_payout
-                .checked_add(amount)
-                .unwrap_or_else(|| panic!("Payout amount overflow"));
+            total_payout = match total_payout.checked_add(amount) {
+                Some(v) => v,
+                None => panic!("Payout amount overflow"),
+            };
         }
 
+        // 6b. Idempotency key deduplication (now that we have total_payout)
         let executor = caller.unwrap_or_else(|| env.current_contract_address());
         if let Err(existing_record) = Self::handle_idempotency(
             &env,
@@ -4280,6 +4294,7 @@ impl ProgramEscrowContract {
             total_payout,
             recipients.len() as u32,
         ) {
+            // Return deterministic result for retry: mirror the original outcome.
             if existing_record.success {
                 return program_data;
             } else {
@@ -4291,6 +4306,9 @@ impl ProgramEscrowContract {
             }
         }
 
+        // 7. Business logic: spend threshold then balance.
+        //    Deterministic ordering: threshold before balance so clients observe
+        //    stable failures regardless of current balance.
         if Self::enforce_spend_threshold(&env, &program_data.program_id, total_payout).is_err() {
             panic!("Spend threshold exceeded");
         }
@@ -4299,7 +4317,9 @@ impl ProgramEscrowContract {
             panic!("Insufficient balance");
         }
 
-        // Pre-validate all fees before any transfer (atomicity guarantee).
+        // 8. Pre-validate fees for every entry BEFORE any transfer.
+        //    This guarantees atomicity: if any fee would consume an entire payout
+        //    the whole batch is rejected with no state changes.
         let cfg = Self::get_fee_config_internal(&env);
         let mut net_amounts: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
         let mut fee_amounts: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
@@ -4311,14 +4331,15 @@ impl ProgramEscrowContract {
                 cfg.payout_fixed_fee,
                 cfg.fee_enabled,
             );
-            let net = gross
-                .checked_sub(pay_fee)
-                .filter(|&v| v > 0)
-                .unwrap_or_else(|| panic!("Payout fee consumes entire payout"));
+            let net = match gross.checked_sub(pay_fee) {
+                Some(v) if v > 0 => v,
+                _ => panic!("Payout fee consumes entire payout"),
+            };
             net_amounts.push_back(net);
             fee_amounts.push_back(pay_fee);
         }
 
+        // 9. Execute transfers — all pre-validation passed; this section must not fail.
         let mut updated_history = program_data.payout_history.clone();
         let timestamp = env.ledger().timestamp();
         let contract_address = env.current_contract_address();
@@ -4326,9 +4347,9 @@ impl ProgramEscrowContract {
 
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap().clone();
-            let gross = amounts.get(i).unwrap();
             let net = net_amounts.get(i).unwrap();
             let pay_fee = fee_amounts.get(i).unwrap();
+            let gross = amounts.get(i).unwrap();
 
             if pay_fee > 0 {
                 token_client.transfer(&contract_address, &cfg.fee_recipient, &pay_fee);
@@ -4348,11 +4369,13 @@ impl ProgramEscrowContract {
             updated_history.push_back(PayoutRecord { recipient, amount: net, timestamp });
         }
 
+        // Update program data atomically after all transfers succeed.
         let mut updated_data = program_data.clone();
         updated_data.remaining_balance -= total_payout;
         updated_data.payout_history = updated_history;
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
+        // Store idempotency record (CEI: after state mutation, before event).
         if let Some(key) = idempotency_key {
             Self::store_idempotency_record(
                 &env,
@@ -4365,6 +4388,7 @@ impl ProgramEscrowContract {
             );
         }
 
+        // Emit BatchPayout event.
         env.events().publish(
             (BATCH_PAYOUT,),
             BatchPayoutEvent {
@@ -4376,6 +4400,7 @@ impl ProgramEscrowContract {
             },
         );
 
+        // Release reentrancy guard on success.
         reentrancy_guard::release(&env);
         updated_data
     }
@@ -5130,8 +5155,8 @@ impl ProgramEscrowContract {
         receipt
     }
 
-    /// Fetches a stored batch receipt by legacy BatchReceiptKey ID.
-    pub fn get_batch_receipt_legacy(env: Env, batch_id: u64) -> Result<BatchReceipt, BatchError> {
+    /// Fetches a stored batch receipt by ID (legacy key format)
+    pub fn get_batch_receipt_by_batch_id(env: Env, batch_id: u64) -> Result<BatchReceipt, BatchError> {
         env.storage()
             .persistent()
             .get(&BatchReceiptKey::Receipt(batch_id))

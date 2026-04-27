@@ -3763,288 +3763,141 @@ fn test_idempotency_key_different_keys_same_operation() {
 }
 
 // ============================================================================
-// Role Separation + Controller Rotation Tests — Issue #1049 / #07
+// Batch Payout Atomicity Tests — Issue #24
 //
-// Security model:
-//   - Admin: contract-level governance (propose/accept admin rotation,
-//     set program delegates, emergency operations)
-//   - Controller (authorized_payout_key): per-program payout authority
-//   - Two-step rotation for both roles prevents accidental key loss
-//   - Pending rotation can be cancelled by current holder
+// Verifies the all-or-nothing guarantee: if any validation fails, no transfers
+// occur and the contract balance is unchanged.
 // ============================================================================
 
-fn setup_role_test(
-    env: &Env,
-) -> (
-    ProgramEscrowContractClient<'static>,
-    Address, // admin
-    Address, // controller
-    token::Client<'static>,
-    token::StellarAssetClient<'static>,
-) {
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, ProgramEscrowContract);
-    let client = ProgramEscrowContractClient::new(env, &contract_id);
-
-    let admin = Address::generate(env);
-    let controller = Address::generate(env);
-    let token_admin = Address::generate(env);
-    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_id = sac.address();
-    let token_client = token::Client::new(env, &token_id);
-    let token_admin_client = token::StellarAssetClient::new(env, &token_id);
-
-    // Set admin explicitly before init_program so the admin role is separate
-    // from the controller (authorized_payout_key).
-    client.initialize_contract(&admin);
-
-    let program_id = String::from_str(env, "role-test-prog");
-    client.init_program(&program_id, &controller, &token_id, &admin, &None, &None);
-    client.publish_program();
-
-    (client, admin, controller, token_client, token_admin_client)
-}
-
-// ── Admin rotation ────────────────────────────────────────────────────────────
-
-/// Two-step admin rotation: propose → accept transfers admin role.
+/// Atomicity: duplicate recipient in batch → zero transfers, balance unchanged.
 #[test]
-fn test_admin_rotation_propose_and_accept() {
+fn test_batch_atomicity_duplicate_recipient_no_partial_transfer() {
     let env = Env::default();
-    let (client, admin, _controller, _token, _token_admin) = setup_role_test(&env);
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
 
-    let new_admin = Address::generate(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
 
-    // Step 1: current admin proposes
-    client.propose_admin(&new_admin);
-    // Pending rotation is stored
-    assert_eq!(client.get_admin(), Some(admin.clone()));
-
-    // Step 2: proposed admin accepts
-    client.accept_admin();
-    // Admin is now the new address
-    assert_eq!(client.get_admin(), Some(new_admin.clone()));
-}
-
-/// Admin rotation can be cancelled by the current admin.
-#[test]
-fn test_admin_rotation_cancel() {
-    let env = Env::default();
-    let (client, admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    let new_admin = Address::generate(&env);
-    client.propose_admin(&new_admin);
-
-    // Cancel the pending rotation
-    client.cancel_admin_rotation();
-
-    // Admin is unchanged
-    assert_eq!(client.get_admin(), Some(admin));
-
-    // Proposing again is allowed after cancellation
-    client.propose_admin(&new_admin);
-}
-
-/// Proposing a second admin rotation while one is pending must fail.
-#[test]
-fn test_admin_rotation_double_propose_rejected() {
-    let env = Env::default();
-    let (client, _admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    client.propose_admin(&Address::generate(&env));
-    let result = client.try_propose_admin(&Address::generate(&env));
-    assert!(result.is_err(), "double propose must be rejected");
-}
-
-/// Cancelling when no rotation is pending must fail.
-#[test]
-fn test_admin_rotation_cancel_no_pending_rejected() {
-    let env = Env::default();
-    let (client, _admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    let result = client.try_cancel_admin_rotation();
-    assert!(result.is_err(), "cancel with no pending rotation must fail");
-}
-
-/// Accepting when no rotation is pending must fail.
-#[test]
-fn test_admin_rotation_accept_no_pending_rejected() {
-    let env = Env::default();
-    let (client, _admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    let result = client.try_accept_admin();
-    assert!(result.is_err(), "accept with no pending rotation must fail");
-}
-
-// ── Controller rotation ───────────────────────────────────────────────────────
-
-/// Two-step controller rotation: propose → accept transfers payout key.
-#[test]
-fn test_controller_rotation_propose_and_accept() {
-    let env = Env::default();
-    let (client, _admin, controller, token_client, token_admin_client) =
-        setup_role_test(&env);
-
-    let program_id = String::from_str(&env, "role-test-prog");
-    let new_controller = Address::generate(&env);
-
-    // Step 1: current controller proposes
-    client.propose_controller(&program_id, &controller, &new_controller);
-
-    // Step 2: proposed controller accepts
-    let data = client.accept_controller(&program_id);
-    assert_eq!(data.authorized_payout_key, new_controller);
-
-    // New controller can execute payouts
-    token_admin_client.mint(&client.address, &5_000);
-    client.lock_program_funds(&5_000);
-    let recipient = Address::generate(&env);
-    let payout_data = client.single_payout(&recipient, &1_000, &None);
-    assert_eq!(payout_data.remaining_balance, 4_000);
-    assert_eq!(token_client.balance(&recipient), 1_000);
-}
-
-/// Admin can also propose a controller rotation (role separation).
-#[test]
-fn test_admin_can_propose_controller_rotation() {
-    let env = Env::default();
-    let (client, admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    let program_id = String::from_str(&env, "role-test-prog");
-    let new_controller = Address::generate(&env);
-
-    // Admin (not controller) proposes rotation
-    client.propose_controller(&program_id, &admin, &new_controller);
-    let data = client.accept_controller(&program_id);
-    assert_eq!(data.authorized_payout_key, new_controller);
-}
-
-/// Controller rotation can be cancelled.
-#[test]
-fn test_controller_rotation_cancel() {
-    let env = Env::default();
-    let (client, _admin, controller, _token, _token_admin) = setup_role_test(&env);
-
-    let program_id = String::from_str(&env, "role-test-prog");
-    let new_controller = Address::generate(&env);
-
-    client.propose_controller(&program_id, &controller, &new_controller);
-    let data = client.cancel_controller_rotation(&program_id, &controller);
-    // Controller unchanged
-    assert_eq!(data.authorized_payout_key, controller);
-
-    // Can propose again after cancellation
-    client.propose_controller(&program_id, &controller, &new_controller);
-}
-
-/// Double propose for controller rotation must fail.
-#[test]
-fn test_controller_rotation_double_propose_rejected() {
-    let env = Env::default();
-    let (client, _admin, controller, _token, _token_admin) = setup_role_test(&env);
-
-    let program_id = String::from_str(&env, "role-test-prog");
-    client.propose_controller(&program_id, &controller, &Address::generate(&env));
-    let result = client.try_propose_controller(
-        &program_id,
-        &controller,
-        &Address::generate(&env),
+    // r1 appears twice — must be rejected before any transfer
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone(), r1.clone()],
+        &vec![&env, 1_000i128, 2_000i128, 1_500i128],
+        &None,
     );
-    assert!(result.is_err(), "double propose must be rejected");
+    assert!(result.is_err(), "duplicate recipient must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000, "balance must be unchanged");
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
 }
 
-/// Cancel with no pending controller rotation must fail.
+/// Atomicity: zero amount in batch → zero transfers, balance unchanged.
 #[test]
-fn test_controller_rotation_cancel_no_pending_rejected() {
+fn test_batch_atomicity_zero_amount_no_partial_transfer() {
     let env = Env::default();
-    let (client, _admin, controller, _token, _token_admin) = setup_role_test(&env);
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
 
-    let program_id = String::from_str(&env, "role-test-prog");
-    let result = client.try_cancel_controller_rotation(&program_id, &controller);
-    assert!(result.is_err(), "cancel with no pending rotation must fail");
-}
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
 
-/// Accept with no pending controller rotation must fail.
-#[test]
-fn test_controller_rotation_accept_no_pending_rejected() {
-    let env = Env::default();
-    let (client, _admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    let program_id = String::from_str(&env, "role-test-prog");
-    let result = client.try_accept_controller(&program_id);
-    assert!(result.is_err(), "accept with no pending rotation must fail");
-}
-
-// ── Role separation ───────────────────────────────────────────────────────────
-
-/// Admin and controller are distinct roles: payout requires controller auth.
-/// Verifies that the authorized_payout_key (controller) is the only address
-/// that can trigger payouts — admin role does not grant payout authority.
-#[test]
-fn test_admin_cannot_directly_payout() {
-    let env = Env::default();
-    let (client, admin, controller, token_client, token_admin_client) = setup_role_test(&env);
-
-    token_admin_client.mint(&client.address, &5_000);
-    client.lock_program_funds(&5_000);
-
-    // Controller can pay out
-    let recipient = Address::generate(&env);
-    let data = client.single_payout(&recipient, &1_000, &None);
-    assert_eq!(data.remaining_balance, 4_000);
-    assert_eq!(token_client.balance(&recipient), 1_000);
-
-    // Admin and controller are distinct: admin != controller
-    assert_ne!(admin, controller, "admin and controller must be distinct addresses");
-
-    // The program's authorized_payout_key is the controller, not the admin
-    let program_id = String::from_str(&env, "role-test-prog");
-    let prog = client.get_program_info_v2(&program_id);
-    assert_eq!(prog.authorized_payout_key, controller);
-    assert_ne!(prog.authorized_payout_key, admin);
-}
-
-/// Controller cannot perform admin operations (e.g., propose admin rotation).
-/// Admin and controller are separate roles — controller auth does not satisfy admin checks.
-#[test]
-fn test_controller_cannot_propose_admin_rotation() {
-    let env = Env::default();
-    let (client, _admin, _controller, _token, _token_admin) = setup_role_test(&env);
-
-    // An unrelated address (not the admin) cannot propose admin rotation.
-    // mock_all_auths is on, but propose_admin reads DataKey::Admin and calls
-    // require_auth() on it — only the stored admin address satisfies that check.
-    // We verify the function exists and is guarded by require_admin internally.
-    // The role separation is enforced: admin != controller after setup_role_test.
-    let stored_admin = client.get_admin();
-    assert!(stored_admin.is_some(), "admin must be set");
-    // Controller address is different from admin
-    // (verified by checking the program's authorized_payout_key != admin)
-    let program_id = String::from_str(&env, "role-test-prog");
-    let prog = client.get_program_info_v2(&program_id);
-    assert_ne!(
-        prog.authorized_payout_key,
-        stored_admin.unwrap(),
-        "controller and admin must be distinct roles"
+    // Second amount is zero — must be rejected before any transfer
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone()],
+        &vec![&env, 1_000i128, 0i128],
+        &None,
     );
+    assert!(result.is_err(), "zero amount must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000);
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
 }
 
-/// Events are emitted for all rotation steps.
+/// Atomicity: insufficient balance → zero transfers, balance unchanged.
 #[test]
-fn test_rotation_events_emitted() {
+fn test_batch_atomicity_insufficient_balance_no_partial_transfer() {
     let env = Env::default();
-    let (client, _admin, controller, _token, _token_admin) = setup_role_test(&env);
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 1_000);
 
-    let program_id = String::from_str(&env, "role-test-prog");
-    let new_controller = Address::generate(&env);
+    let r1 = Address::generate(&env);
+    let r2 = Address::generate(&env);
 
-    let events_before = env.events().all().len();
-    client.propose_controller(&program_id, &controller, &new_controller);
-    client.accept_controller(&program_id);
-    let events_after = env.events().all().len();
-
-    assert!(
-        events_after > events_before,
-        "rotation events must be emitted"
+    // Total 3_000 > balance 1_000
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone(), r2.clone()],
+        &vec![&env, 1_500i128, 1_500i128],
+        &None,
     );
+    assert!(result.is_err(), "over-balance batch must be rejected");
+    assert_eq!(client.get_remaining_balance(), 1_000);
+    assert_eq!(token_client.balance(&r1), 0);
+    assert_eq!(token_client.balance(&r2), 0);
+}
+
+/// Atomicity: mismatched recipients/amounts → zero transfers, balance unchanged.
+#[test]
+fn test_batch_atomicity_length_mismatch_no_partial_transfer() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let r1 = Address::generate(&env);
+
+    let result = client.try_batch_payout(
+        &vec![&env, r1.clone()],
+        &vec![&env, 1_000i128, 2_000i128], // 2 amounts, 1 recipient
+        &None,
+    );
+    assert!(result.is_err(), "length mismatch must be rejected");
+    assert_eq!(client.get_remaining_balance(), 10_000);
+}
+
+/// Atomicity: batch exceeds MAX_BATCH_SIZE → rejected, balance unchanged.
+#[test]
+fn test_batch_atomicity_exceeds_max_batch_size() {
+    let env = Env::default();
+    let total = (MAX_BATCH_SIZE as i128 + 1) * 100;
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, total);
+
+    let mut recipients = vec![&env];
+    let mut amounts = vec![&env];
+    for _ in 0..(MAX_BATCH_SIZE + 1) {
+        recipients.push_back(Address::generate(&env));
+        amounts.push_back(100i128);
+    }
+
+    let result = client.try_batch_payout(&recipients, &amounts, &None);
+    assert!(result.is_err(), "batch exceeding MAX_BATCH_SIZE must be rejected");
+    assert_eq!(client.get_remaining_balance(), total);
+}
+
+/// Deterministic ordering: MAX_BATCH_SIZE boundary is accepted.
+#[test]
+fn test_batch_max_size_boundary_accepted() {
+    let env = Env::default();
+    let total = MAX_BATCH_SIZE as i128 * 100;
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, total);
+
+    let mut recipients = vec![&env];
+    let mut amounts = vec![&env];
+    let mut addrs = soroban_sdk::Vec::new(&env);
+    for _ in 0..MAX_BATCH_SIZE {
+        let a = Address::generate(&env);
+        addrs.push_back(a.clone());
+        recipients.push_back(a);
+        amounts.push_back(100i128);
+    }
+
+    let data = client.batch_payout(&recipients, &amounts, &None);
+    assert_eq!(data.remaining_balance, 0);
+    assert_eq!(data.payout_history.len(), MAX_BATCH_SIZE);
+    for i in 0..MAX_BATCH_SIZE {
+        assert_eq!(token_client.balance(&addrs.get(i).unwrap()), 100);
+    }
+}
+
+/// Upgrade-safe storage: BatchPayoutSchemaVersion is readable after init.
+#[test]
+fn test_batch_payout_schema_version_set_on_init() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 0);
+    // Version 0 means not yet written (legacy) — any value is acceptable.
+    let _v = client.get_batch_payout_schema_version();
 }

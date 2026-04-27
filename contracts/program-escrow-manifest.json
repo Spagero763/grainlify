@@ -130,22 +130,21 @@
         "version": "2.9.0",
         "release_date": "2026-04-26",
         "changes": [
-          "Role separation: Admin (contract governance) and Controller (per-program payout key) are now fully distinct roles with independent auth paths",
-          "Two-step admin rotation: propose_admin (current admin) → accept_admin (proposed admin); prevents accidental key loss",
-          "Two-step controller rotation: propose_controller (controller or admin) → accept_controller (proposed controller); per-program rotation slot",
-          "cancel_admin_rotation: current admin can abort a pending admin rotation",
-          "cancel_controller_rotation: current controller or admin can abort a pending controller rotation",
-          "Added DataKey::PendingAdmin and DataKey::PendingController(String) upgrade-safe storage keys for rotation state",
-          "Added DataKey::ReentrancyGuard, IdempotencyKey, IdempotencySchemaVersion, BatchPayoutSchemaVersion, CircuitBreakerSchemaVersion, BatchReceipt — all missing variants that caused compilation failures",
-          "Added reentrancy_guard::clear_entered, set_entered, check_not_entered aliases for call-site compatibility",
-          "Removed #[contracterror] from ContractError (exceeded XDR VecM variant limit); description() impl preserved",
-          "Fixed symbol_short names exceeding Soroban 9-char limit: batch_payout→batchpay, single_payout→singlepay",
-          "Fixed duplicate fn names: get_batch_receipt (legacy→get_batch_receipt_legacy), require_not_read_only (maintenance→require_not_maintenance_mode)",
-          "Fixed long contract function names: get_circuit_breaker_schema_version→get_cb_schema_version, get_release_trigger_schema_version→get_trigger_schema_version",
-          "Fixed idempotency_key moved-value error in single_payout_internal and handle_idempotency",
-          "Removed duplicate idempotency key storage in single_payout_internal",
-          "Added #[cfg(test)] guard to test_batch_receipts module",
-          "Added 15 targeted tests covering: admin rotation (propose/accept/cancel/double-propose/no-pending), controller rotation (propose/accept/cancel/double-propose/no-pending), role separation (admin≠controller, events emitted)"
+          "batch_payout_internal: true all-or-nothing atomicity — all fees pre-validated before any token transfer; FeeConsumesAmount can no longer fire mid-batch leaving partial state",
+          "Removed duplicate circuit breaker check (step 8) — single authoritative check at step 3c before all business logic",
+          "Removed duplicate idempotency key storage — store_idempotency_record is the sole write path; stale persistent.set removed",
+          "Added MAX_BATCH_SIZE enforcement (≤ 100) before any validation loop",
+          "Replaced undefined bail! macro with explicit panic! calls matching soroban no_std conventions",
+          "Replaced reentrancy_guard::clear_entered with reentrancy_guard::release (canonical name); added clear_entered/set_entered/check_not_entered aliases for call-site compatibility",
+          "Fixed idempotency_key moved-value error in single_payout_internal and handle_idempotency (clone before move)",
+          "Added missing DataKey variants: IdempotencyKey, BatchPayoutSchemaVersion, ReentrancyGuard, PendingAdmin, PendingController, IdempotencySchemaVersion, CircuitBreakerSchemaVersion, BatchReceipt",
+          "Removed #[contracterror] from ContractError (too many variants for XDR VecM limit); description() impl preserved",
+          "Fixed symbol_short!(\"batch_payout\") → \"batchpay\" and \"single_payout\" → \"singlepay\" (Soroban 9-char limit)",
+          "Renamed duplicate get_batch_receipt (legacy BatchReceiptKey path) to get_batch_receipt_by_batch_id",
+          "Renamed duplicate require_not_read_only (MaintenanceMode path) to require_not_maintenance_mode",
+          "Renamed get_release_trigger_schema_version → get_trigger_schema_version and get_circuit_breaker_schema_version → get_cb_schema_version (32-char contract name limit)",
+          "Added #[cfg(test)] guard to test_batch_receipts module declaration",
+          "Added 7 targeted atomicity tests covering: duplicate recipient, zero amount, insufficient balance, length mismatch, MAX_BATCH_SIZE boundary, schema version readability"
         ]
       }
     ]

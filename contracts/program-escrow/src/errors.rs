@@ -853,6 +853,8 @@ impl ContractError {
             ContractError::TokenNotAllowed => "Token is not on the allowlist",
             ContractError::TokenAlreadyAllowed => "Token is already on the allowlist",
             ContractError::TokenNotInAllowlist => "Token is not in the allowlist",
+
+            // Release Trigger / Schedule Errors
             ContractError::ReleaseTriggerFailed => "Release trigger failed",
             ContractError::NoSchedulesDue => "No schedules are due for release",
             ContractError::DeterminismViolation => "Determinism violation detected",
