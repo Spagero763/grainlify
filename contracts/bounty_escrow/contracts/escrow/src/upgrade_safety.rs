@@ -330,6 +330,21 @@ fn check_storage_layout_compatibility(env: &Env) -> (bool, Vec<UpgradeWarning>) 
         }
     }
 
+    // Fee routing schema version: warn if absent (legacy deployment pre-v2.1).
+    if !env
+        .storage()
+        .instance()
+        .has(&crate::DataKey::FeeRoutingSchemaVersion)
+    {
+        warnings.push_back(UpgradeWarning {
+            code: safety_codes::STORAGE_LAYOUT,
+            message: soroban_sdk::String::from_str(
+                env,
+                "FeeRoutingSchemaVersion absent; upgrade will write v1 marker",
+            ),
+        });
+    }
+
     (true, warnings)
 }
 
@@ -569,7 +584,7 @@ pub fn validate_upgrade(env: &Env) -> Result<(), Error> {
         if !report.errors.is_empty() {
             // For simplicity, we return a generic error
             // In production, you might want more specific error codes
-            return Err(Error::UpgradeSafetyFailed);
+            return Err(Error::UpgradeSafetyCheckFailed);
         }
     }
 

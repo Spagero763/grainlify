@@ -1,8 +1,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    xdr::{FromXdr, Hash, ScAddress, ToXdr},
     testutils::Address as _,
+    xdr::{FromXdr, Hash, ScAddress, ToXdr},
     Address, Env, IntoVal, String as SdkString, Symbol, TryFromVal, Val,
 };
 
@@ -87,18 +87,10 @@ fn serialization_compatibility_public_types_and_events() {
         token_address: token.clone(),
         initial_liquidity: 500,
         risk_flags: 0,
-        metadata: ProgramMetadata {
-            program_name: None,
-            program_type: None,
-            ecosystem: None,
-            tags: Vec::new(&env),
-            start_date: None,
-            end_date: None,
-            custom_fields: Vec::new(&env),
-        },
         reference_hash: None,
         archived: false,
         archived_at: None,
+        status: ProgramStatus::Active,
     };
 
     let program_initialized = ProgramInitializedEvent {

@@ -154,6 +154,8 @@ fn test_admin_can_update_fee_config() {
     s.client.update_fee_config(
         &Some(50i128),
         &Some(50i128),
+        &None,
+        &None,
         &Some(s.admin.clone()),
         &Some(true),
     );
@@ -167,9 +169,9 @@ fn test_admin_can_update_fee_config() {
 #[test]
 fn test_admin_can_set_maintenance_mode() {
     let s = Setup::new();
-    s.client.set_maintenance_mode(&true);
+    s.client.set_maintenance_mode(&true, &None);
     assert!(s.client.is_maintenance_mode());
-    s.client.set_maintenance_mode(&false);
+    s.client.set_maintenance_mode(&false, &None);
     assert!(!s.client.is_maintenance_mode());
 }
 
@@ -371,7 +373,7 @@ fn test_operator_cannot_update_fee_config() {
     let contract_id = env.register_contract(None, BountyEscrowContract);
     let client = BountyEscrowContractClient::new(&env, &contract_id);
     // No init — must panic
-    client.update_fee_config(&Some(100i128), &None, &None, &None);
+    client.update_fee_config(&Some(100i128), &None, &None, &None, &None, &None);
 }
 
 #[test]
@@ -408,7 +410,7 @@ fn test_random_cannot_set_maintenance_mode() {
     let env = Env::default();
     let contract_id = env.register_contract(None, BountyEscrowContract);
     let client = BountyEscrowContractClient::new(&env, &contract_id);
-    client.set_maintenance_mode(&true);
+    client.set_maintenance_mode(&true, &None);
 }
 
 #[test]

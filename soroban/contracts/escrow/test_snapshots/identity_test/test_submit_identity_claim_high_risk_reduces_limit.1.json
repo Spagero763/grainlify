@@ -83,7 +83,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "bytes": "f3dfc547a110384ae0393223c7f0c2a95993cc786a72cc5d4c8c661517479d53"
+                  "bytes": "b3aebab33b3f057a950af0846c5be30eb1b19af8025b3558d557107387171549"
                 },
                 {
                   "bool": true
@@ -149,7 +149,7 @@
                   ]
                 },
                 {
-                  "bytes": "f2e6aafabe026ff57c1e391a2b7d6fa7b9b5f743e5bc90451514c02a38c55317d9a53ab799a1e292d12412f9a25f46ad6baa0c35de38c8ef415effd54c9d4909"
+                  "bytes": "32a3324487e21bb525c958063a92c48aeb707485d1ac5f7205797375a8c87e139f8c75e7c218ae738891345a8c8247d8b94ae6f40f30c21aefa6674dd4be5900"
                 }
               ]
             }
@@ -395,7 +395,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "bytes": "f3dfc547a110384ae0393223c7f0c2a95993cc786a72cc5d4c8c661517479d53"
+                  "bytes": "b3aebab33b3f057a950af0846c5be30eb1b19af8025b3558d557107387171549"
                 }
               }
             },
@@ -459,11 +459,51 @@
                     },
                     {
                       "key": {
+                        "symbol": "delegate"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "delegate_permissions"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "depositor"
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "jurisdiction"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "None"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "labels"
+                      },
+                      "val": {
+                        "vec": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "metadata"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -484,6 +524,49 @@
                           }
                         ]
                       }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "EscrowIndex"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "EscrowIndex"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "u64": "1"
                     }
                   ]
                 }
@@ -666,7 +749,7 @@
                           ]
                         },
                         "val": {
-                          "bool": false
+                          "u32": 1
                         }
                       },
                       {

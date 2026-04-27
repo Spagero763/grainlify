@@ -87,6 +87,10 @@ fn serialization_compatibility_public_types_and_events() {
         deadline,
         // Keep nested vectors minimal in goldens to avoid huge outputs.
         refund_history: soroban_sdk::vec![&env],
+        creation_timestamp: 0,
+        expiry: 0,
+        archived: false,
+        archived_at: None,
     };
 
     let samples: &[(&str, Val)] = &[
@@ -196,7 +200,6 @@ fn serialization_compatibility_public_types_and_events() {
                 amount: 1234,
                 expires_at: 555,
                 claimed: false,
-                reason: DisputeReason::Other,
             }
             .into_val(&env),
         ),
@@ -292,6 +295,7 @@ fn serialization_compatibility_public_types_and_events() {
                 amount: 100,
                 refund_to: depositor.clone(),
                 timestamp: 200,
+                trigger_type: crate::events::RefundTriggerType::DeadlineExpired,
             }
             .into_val(&env),
         ),
@@ -388,7 +392,8 @@ fn serialization_compatibility_public_types_and_events() {
             EmergencyWithdrawEvent {
                 admin: admin.clone(),
                 recipient: depositor.clone(),
-                amount: 1000, timestamp: 500,
+                amount: 1000,
+                timestamp: 500,
             }
             .into_val(&env),
         ),

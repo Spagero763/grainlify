@@ -6,6 +6,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const Ajv2020 = require('ajv/dist/2020').default;
 
 // Colors for output
 const colors = {
@@ -136,6 +137,12 @@ manifests.forEach(manifest => {
   
   // Check behaviors structure
   log('blue', '🔍 Checking behaviors structure...');
+  // Initialize AJV
+  const ajv = new Ajv2020({
+    allErrors: true,
+    strict: false,
+    validateFormats: false,
+  });
   
   if (manifestData.behaviors && manifestData.behaviors.security_features) {
     log('green', '  ✅ behaviors.security_features');
