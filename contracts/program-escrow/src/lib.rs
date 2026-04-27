@@ -1590,7 +1590,7 @@ impl ProgramEscrowContract {
             (IDEMPOTENCY_KEY_USED,),
             IdempotencyKeyUsedEvent {
                 version: EVENT_VERSION_V2,
-                idempotency_key: record.idempotency_key,
+                idempotency_key: record.idempotency_key.clone(),
                 operation_type: record.operation_type,
                 program_id: record.program_id,
                 total_amount: record.total_amount,
@@ -4217,8 +4217,6 @@ impl ProgramEscrowContract {
 
         reentrancy_guard::acquire(&env);
 
-        // 1b. Idempotency check — runs before any state reads so duplicate
-        //     submissions are rejected cheaply and deterministically.
         if let Some(ref key) = idempotency_key {
             if env.storage().persistent().has(&DataKey::IdempotencyKey(key.clone())) {
                 panic!("Payout already processed");
@@ -4231,12 +4229,10 @@ impl ProgramEscrowContract {
             None => panic!("Program not initialized"),
         };
 
-        // 3. Operational state: paused
         if Self::check_paused(&env, symbol_short!("release")) {
             panic!("Funds Paused");
         }
 
-        // 3b. Dispute guard — payouts blocked while a dispute is open
         if Self::dispute_state(&env) == DisputeState::Open {
             panic!("Payout blocked: dispute open");
         }
@@ -4252,7 +4248,6 @@ impl ProgramEscrowContract {
             }
         }
 
-        // 4. Authorization
         Self::authorize_release_actor(&env, &program_data, caller.as_ref());
 
         // 5a. Length / empty / batch-size checks (deterministic ordering)
@@ -4268,15 +4263,11 @@ impl ProgramEscrowContract {
             panic!("Batch size exceeds maximum allowed");
         }
 
-        // 5b. Pre-validate every entry: zero amounts and duplicate recipients.
-        //     Both checks run over the full list before any transfer so the
-        //     batch is truly atomic — no partial state on failure.
         for i in 0..amounts.len() {
             if amounts.get(i).unwrap() <= 0 {
                 panic!("All amounts must be greater than zero");
             }
         }
-        // Duplicate-recipient check (O(n²) — acceptable for MAX_BATCH_SIZE ≤ 100)
         for i in 0..recipients.len() {
             for j in (i + 1)..recipients.len() {
                 if recipients.get(i).unwrap() == recipients.get(j).unwrap() {
@@ -4285,7 +4276,6 @@ impl ProgramEscrowContract {
             }
         }
 
-        // 6. Compute total atomically — overflow is a hard error.
         let mut total_payout: i128 = 0;
         for amount in amounts.iter() {
             total_payout = match total_payout.checked_add(amount) {
@@ -4322,10 +4312,7 @@ impl ProgramEscrowContract {
         if Self::enforce_spend_threshold(&env, &program_data.program_id, total_payout).is_err() {
             panic!("Spend threshold exceeded");
         }
-
-        // Per-window spending limit check (after per-payout threshold, before balance)
         Self::enforce_spending_window(&env, &program_data.program_id, total_payout);
-
         if total_payout > program_data.remaining_balance {
             panic!("Insufficient balance");
         }
@@ -4375,25 +4362,17 @@ impl ProgramEscrowContract {
                     cfg.fee_recipient.clone(),
                 );
             }
-
             token_client.transfer(&contract_address, &recipient, &net);
-
             error_recovery::record_success(&env);
             threshold_monitor::record_operation_success(&env);
             threshold_monitor::record_outflow(&env, gross);
-
-            updated_history.push_back(PayoutRecord {
-                recipient,
-                amount: net,
-                timestamp,
-            });
+            updated_history.push_back(PayoutRecord { recipient, amount: net, timestamp });
         }
 
         // Update program data atomically after all transfers succeed.
         let mut updated_data = program_data.clone();
         updated_data.remaining_balance -= total_payout;
         updated_data.payout_history = updated_history;
-
         env.storage().instance().set(&PROGRAM_DATA, &updated_data);
 
         // Store idempotency record (CEI: after state mutation, before event).
