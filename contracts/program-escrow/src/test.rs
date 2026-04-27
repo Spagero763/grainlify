@@ -1263,6 +1263,162 @@ fn test_batch_register_second_batch_conflicts_with_first() {
 }
 
 // =============================================================================
+// TOKEN ALLOWLIST ENFORCEMENT TESTS (#1071)
+// =============================================================================
+
+#[test]
+fn test_token_allowlist_enforcement_default_allows_all() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let token1 = Address::generate(&env);
+    let token2 = Address::generate(&env);
+    
+    assert!(client.is_token_allowed(&token1));
+    assert!(client.is_token_allowed(&token2));
+    
+    let program_id = String::from_str(&env, "prog-1");
+    // Should succeed because allowlist is empty
+    env.mock_all_auths();
+    client.init_program(&program_id, &admin, &token1, &admin, &None, &None);
+}
+
+#[test]
+fn test_token_allowlist_enforcement_blocks_unlisted() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let allowed_token = Address::generate(&env);
+    let unlisted_token = Address::generate(&env);
+    
+    // Add token to allowlist - this enables enforcement
+    env.mock_all_auths();
+    client.add_allowed_token(&allowed_token);
+    
+    assert!(client.is_token_allowed(&allowed_token));
+    assert!(!client.is_token_allowed(&unlisted_token));
+    
+    // Using allowed token succeeds
+    let program1 = String::from_str(&env, "prog-1");
+    client.init_program(&program1, &admin, &allowed_token, &admin, &None, &None);
+}
+
+#[test]
+#[should_panic(expected = "Token not on allowlist")]
+fn test_token_allowlist_enforcement_panic_unlisted() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let allowed_token = Address::generate(&env);
+    let unlisted_token = Address::generate(&env);
+    
+    env.mock_all_auths();
+    client.add_allowed_token(&allowed_token);
+    
+    let program2 = String::from_str(&env, "prog-2");
+    // This should panic
+    client.init_program(&program2, &admin, &unlisted_token, &admin, &None, &None);
+}
+
+#[test]
+fn test_token_allowlist_batch_initialization() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let allowed_token = Address::generate(&env);
+    
+    env.mock_all_auths();
+    client.add_allowed_token(&allowed_token);
+    
+    let mut items = Vec::new(&env);
+    items.push_back(ProgramInitItem {
+        program_id: String::from_str(&env, "prog-batch-1"),
+        authorized_payout_key: admin.clone(),
+        token_address: allowed_token.clone(),
+        reference_hash: None,
+    });
+    
+    let count = client.try_batch_initialize_programs(&items).unwrap().unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+#[should_panic(expected = "Token not on allowlist")]
+fn test_token_allowlist_batch_initialization_unlisted() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let allowed_token = Address::generate(&env);
+    let unlisted_token = Address::generate(&env);
+    
+    env.mock_all_auths();
+    client.add_allowed_token(&allowed_token);
+    
+    let mut items = Vec::new(&env);
+    items.push_back(ProgramInitItem {
+        program_id: String::from_str(&env, "prog-batch-1"),
+        authorized_payout_key: admin.clone(),
+        token_address: allowed_token.clone(),
+        reference_hash: None,
+    });
+    items.push_back(ProgramInitItem {
+        program_id: String::from_str(&env, "prog-batch-2"),
+        authorized_payout_key: admin.clone(),
+        token_address: unlisted_token.clone(),
+        reference_hash: None,
+    });
+    
+    let _ = client.batch_initialize_programs(&items);
+}
+
+#[test]
+fn test_token_allowlist_remove_token() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize_contract(&admin);
+    
+    let token1 = Address::generate(&env);
+    let token2 = Address::generate(&env);
+    
+    env.mock_all_auths();
+    client.add_allowed_token(&token1);
+    client.add_allowed_token(&token2);
+    
+    assert!(client.is_token_allowed(&token1));
+    assert!(client.is_token_allowed(&token2));
+    
+    client.remove_allowed_token(&token1);
+    
+    assert!(!client.is_token_allowed(&token1));
+    assert!(client.is_token_allowed(&token2));
+    
+    let tokens = client.get_allowed_tokens();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), token2);
+    
+    // Removing last token disables enforcement
+    client.remove_allowed_token(&token2);
+    assert!(client.is_token_allowed(&token1)); // Enforcement disabled
+}
+
+// =============================================================================
 // TESTS FOR MAXIMUM PROGRAM COUNT (#501)
 // =============================================================================
 

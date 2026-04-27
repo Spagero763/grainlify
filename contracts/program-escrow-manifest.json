@@ -283,7 +283,7 @@
       },
       {
         "name": "batch_payout",
-        "description": "Distribute prizes to multiple winners with optional idempotency key for retry safety",
+        "description": "Distribute prizes to multiple winners",
         "parameters": [
           {
             "name": "winners",
@@ -294,12 +294,6 @@
             "name": "amounts",
             "type": "Vec<i128>",
             "description": "Corresponding prize amounts"
-          },
-          {
-            "name": "idempotency_key",
-            "type": "Option<String>",
-            "description": "Optional idempotency key for deterministic retry behavior",
-            "optional": true
           }
         ],
         "returns": {
@@ -311,31 +305,8 @@
         "gas_estimate": "high"
       },
       {
-        "name": "try_batch_payout",
-        "description": "Typed batch payout — returns Result<ProgramData, BatchPayoutError> instead of panicking. All pre-validation (zero amounts, duplicates, overflow) runs before any token transfer.",
-        "parameters": [
-          {
-            "name": "recipients",
-            "type": "Vec<Address>",
-            "description": "Array of recipient addresses (must be unique)"
-          },
-          {
-            "name": "amounts",
-            "type": "Vec<i128>",
-            "description": "Corresponding payout amounts (all must be > 0)"
-          }
-        ],
-        "returns": {
-          "type": "Result<ProgramData, BatchPayoutError>",
-          "description": "Updated program data on success, typed error on failure"
-        },
-        "authorization": "admin",
-        "pausable": true,
-        "gas_estimate": "high"
-      },
-      {
         "name": "single_payout",
-        "description": "Distribute prize to single winner with optional idempotency key for retry safety",
+        "description": "Distribute prize to single winner",
         "parameters": [
           {
             "name": "winner",
@@ -346,12 +317,6 @@
             "name": "amount",
             "type": "i128",
             "description": "Prize amount"
-          },
-          {
-            "name": "idempotency_key",
-            "type": "Option<String>",
-            "description": "Optional idempotency key for deterministic retry behavior",
-            "optional": true
           }
         ],
         "returns": {
@@ -713,72 +678,6 @@
         "gas_estimate": "low"
       },
       {
-        "name": "get_program_spend_threshold",
-        "description": "Get the configured per-program spend threshold",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          }
-        ],
-        "returns": {
-          "type": "i128",
-          "description": "Maximum allowed gross spend per payout operation"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_spend_limit_schema_version",
-        "description": "Return the spend-limit storage schema version written during init. Returns 0 on legacy deployments.",
-        "parameters": [],
-        "returns": {
-          "type": "u32",
-          "description": "Schema version (1 = current; 0 = legacy pre-v2.3)"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_program_spending_limit",
-        "description": "Return the per-window spending limit configuration for a program, or None if not set.",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          }
-        ],
-        "returns": {
-          "type": "Option<ProgramSpendingConfig>",
-          "description": "Spending limit config (window_size, max_amount, enabled), or None"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_program_spending_state",
-        "description": "Return the current window state for a program's spending limit, or None if no payout has occurred yet.",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          }
-        ],
-        "returns": {
-          "type": "Option<ProgramSpendingState>",
-          "description": "Window state (window_start, amount_released), or None"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
         "name": "get_program_release_schedules",
         "description": "Get release schedules for all programs",
         "parameters": [],
@@ -865,181 +764,81 @@
         "description": "Paginated payout history filtered by recipient address",
         "parameters": [
           {
-            "name": "recipient",
+            "name": "token",
             "type": "Address",
-            "description": "Recipient address to filter by"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
+            "description": "Token contract address to check"
           }
         ],
         "returns": {
-          "type": "Vec<PayoutRecord>",
-          "description": "Paginated payout records for the recipient"
+          "type": "bool",
+          "description": "True if token is allowed"
         },
         "authorization": "any",
         "pausable": false,
-        "gas_estimate": "medium"
+        "gas_estimate": "low"
       },
       {
-        "name": "query_payouts_by_amount",
-        "description": "Paginated payout history filtered by amount range (inclusive)",
-        "parameters": [
-          {
-            "name": "min_amount",
-            "type": "i128",
-            "description": "Minimum payout amount (inclusive)"
-          },
-          {
-            "name": "max_amount",
-            "type": "i128",
-            "description": "Maximum payout amount (inclusive)"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
-          }
-        ],
+        "name": "get_allowed_tokens",
+        "description": "Get all tokens on the allowlist",
+        "parameters": [],
         "returns": {
-          "type": "Vec<PayoutRecord>",
-          "description": "Paginated payout records within the amount range"
+          "type": "Vec<Address>",
+          "description": "List of allowed token addresses"
         },
         "authorization": "any",
         "pausable": false,
-        "gas_estimate": "medium"
+        "gas_estimate": "low"
       },
       {
-        "name": "query_payouts_by_timestamp",
-        "description": "Paginated payout history filtered by timestamp range (inclusive)",
-        "parameters": [
-          {
-            "name": "min_timestamp",
-            "type": "u64",
-            "description": "Start of timestamp range (inclusive)"
-          },
-          {
-            "name": "max_timestamp",
-            "type": "u64",
-            "description": "End of timestamp range (inclusive)"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
-          }
-        ],
+        "name": "get_allowlist_schema_version",
+        "description": "Get the token allowlist schema version",
+        "parameters": [],
         "returns": {
-          "type": "Vec<PayoutRecord>",
-          "description": "Paginated payout records within the timestamp range"
+          "type": "u32",
+          "description": "Schema version number"
         },
         "authorization": "any",
         "pausable": false,
-        "gas_estimate": "medium"
-      },
-      {
-        "name": "query_schedules_by_recipient",
-        "description": "Paginated release schedules filtered by recipient address",
-        "parameters": [
-          {
-            "name": "recipient",
-            "type": "Address",
-            "description": "Recipient address to filter by"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
-          }
-        ],
-        "returns": {
-          "type": "Vec<ProgramReleaseSchedule>",
-          "description": "Paginated release schedules for the recipient"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "medium"
-      },
-      {
-        "name": "query_schedules_by_status",
-        "description": "Paginated release schedules filtered by released status",
-        "parameters": [
-          {
-            "name": "released",
-            "type": "bool",
-            "description": "True for released schedules, false for pending"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
-          }
-        ],
-        "returns": {
-          "type": "Vec<ProgramReleaseSchedule>",
-          "description": "Paginated release schedules matching the status"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "medium"
-      },
-      {
-        "name": "query_releases_by_recipient",
-        "description": "Paginated release history filtered by recipient address",
-        "parameters": [
-          {
-            "name": "recipient",
-            "type": "Address",
-            "description": "Recipient address to filter by"
-          },
-          {
-            "name": "offset",
-            "type": "u32",
-            "description": "Number of matching records to skip"
-          },
-          {
-            "name": "limit",
-            "type": "u32",
-            "description": "Maximum records to return (1\u2013200)"
-          }
-        ],
-        "returns": {
-          "type": "Vec<ProgramReleaseHistory>",
-          "description": "Paginated release history records for the recipient"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "medium"
+        "gas_estimate": "low"
       }
     ],
     "admin": [
+      {
+        "name": "add_allowed_token",
+        "description": "Add a token to the allowlist",
+        "parameters": [
+          {
+            "name": "token",
+            "type": "Address",
+            "description": "Token contract address to allow"
+          }
+        ],
+        "returns": {
+          "type": "()",
+          "description": "Empty on success"
+        },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
+      {
+        "name": "remove_allowed_token",
+        "description": "Remove a token from the allowlist",
+        "parameters": [
+          {
+            "name": "token",
+            "type": "Address",
+            "description": "Token contract address to remove"
+          }
+        ],
+        "returns": {
+          "type": "()",
+          "description": "Empty on success"
+        },
+        "authorization": "admin",
+        "pausable": false,
+        "gas_estimate": "low"
+      },
       {
         "name": "initialize_contract",
         "description": "Initialize contract with admin",
@@ -1089,99 +888,6 @@
         "gas_estimate": "low"
       },
       {
-        "name": "propose_admin",
-        "description": "Propose a new admin (two-step rotation step 1). Current admin must authorize. Panics if a rotation is already pending.",
-        "parameters": [
-          {
-            "name": "proposed_admin",
-            "type": "Address",
-            "description": "Address being proposed as the next admin"
-          }
-        ],
-        "returns": { "type": "()", "description": "Empty on success" },
-        "authorization": "admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "accept_admin",
-        "description": "Accept the proposed admin role (step 2). Proposed admin must authorize. Panics if no rotation is pending.",
-        "parameters": [],
-        "returns": { "type": "()", "description": "Empty on success" },
-        "authorization": "proposed_admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "cancel_admin_rotation",
-        "description": "Cancel a pending admin rotation. Current admin must authorize. Panics if no rotation is pending.",
-        "parameters": [],
-        "returns": { "type": "()", "description": "Empty on success" },
-        "authorization": "admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "propose_controller",
-        "description": "Propose a new authorized_payout_key for a program (step 1). Current controller or admin must authorize. Panics if a rotation is already pending.",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          },
-          {
-            "name": "caller",
-            "type": "Address",
-            "description": "Current controller or admin"
-          },
-          {
-            "name": "proposed_controller",
-            "type": "Address",
-            "description": "Address being proposed as the next controller"
-          }
-        ],
-        "returns": { "type": "ProgramData", "description": "Current program data" },
-        "authorization": "controller_or_admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "accept_controller",
-        "description": "Accept the proposed controller role for a program (step 2). Proposed controller must authorize. Panics if no rotation is pending.",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          }
-        ],
-        "returns": { "type": "ProgramData", "description": "Updated program data with new controller" },
-        "authorization": "proposed_controller",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "cancel_controller_rotation",
-        "description": "Cancel a pending controller rotation. Current controller or admin must authorize. Panics if no rotation is pending.",
-        "parameters": [
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program identifier"
-          },
-          {
-            "name": "caller",
-            "type": "Address",
-            "description": "Current controller or admin"
-          }
-        ],
-        "returns": { "type": "ProgramData", "description": "Current program data" },
-        "authorization": "controller_or_admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
         "name": "set_circuit_admin",
         "description": "Set circuit breaker admin",
         "parameters": [
@@ -1212,18 +918,6 @@
         "returns": {
           "type": "Option<Address>",
           "description": "Circuit breaker admin if set"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_circuit_breaker_status",
-        "description": "Return a full snapshot of the circuit breaker state. Returns safe defaults for legacy deployments that have never written circuit breaker state.",
-        "parameters": [],
-        "returns": {
-          "type": "CircuitBreakerStatus",
-          "description": "Snapshot of state, failure_count, success_count, opened_at, and configured thresholds"
         },
         "authorization": "any",
         "pausable": false,
@@ -1282,11 +976,11 @@
       },
       {
         "name": "get_circuit_status",
-        "description": "Return a full snapshot of the circuit breaker state including failure/success counts, timestamps, and configured thresholds",
+        "description": "Get circuit breaker status",
         "parameters": [],
         "returns": {
           "type": "CircuitBreakerStatus",
-          "description": "Circuit breaker status snapshot"
+          "description": "Circuit breaker status"
         },
         "authorization": "any",
         "pausable": false,
@@ -1294,7 +988,7 @@
       },
       {
         "name": "get_circuit_error_log",
-        "description": "Return the last N circuit breaker error log entries",
+        "description": "Get circuit breaker error log",
         "parameters": [],
         "returns": {
           "type": "Vec<ErrorEntry>",
@@ -1306,7 +1000,7 @@
       },
       {
         "name": "emergency_open_circuit",
-        "description": "Immediately open the circuit breaker (circuit admin only). Blocks all payouts until reset.",
+        "description": "Emergency open circuit (admin only)",
         "parameters": [
           {
             "name": "admin",
@@ -1319,42 +1013,6 @@
           "description": "Empty on success"
         },
         "authorization": "admin",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "init_threshold_monitoring",
-        "description": "Initialize threshold monitoring with default configuration. Idempotent.",
-        "parameters": [],
-        "returns": {
-          "type": "()",
-          "description": "Empty on success"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_threshold_config",
-        "description": "Return the current threshold monitoring configuration",
-        "parameters": [],
-        "returns": {
-          "type": "ThresholdConfig",
-          "description": "Threshold monitoring configuration"
-        },
-        "authorization": "any",
-        "pausable": false,
-        "gas_estimate": "low"
-      },
-      {
-        "name": "get_circuit_breaker_schema_version",
-        "description": "Return the circuit-breaker storage schema version written during init. Returns 0 on legacy deployments.",
-        "parameters": [],
-        "returns": {
-          "type": "u32",
-          "description": "Schema version (1 = current; 0 = legacy pre-v2.4)"
-        },
-        "authorization": "any",
         "pausable": false,
         "gas_estimate": "low"
       }
@@ -1434,40 +1092,10 @@
         "data_structure": "Address"
       },
       {
-        "name": "DataKey::PendingAdmin",
-        "type": "instance",
-        "description": "Proposed next admin address for two-step rotation. Present only while a rotation is in progress; removed on accept or cancel.",
-        "data_structure": "Address"
-      },
-      {
-        "name": "DataKey::PendingController(String)",
-        "type": "instance",
-        "description": "Proposed next authorized_payout_key for a program. Key is program_id. Present only while a rotation is in progress; removed on accept or cancel.",
-        "data_structure": "Address"
-      },
-      {
         "name": "DataKey::PauseFlags",
         "type": "instance",
         "description": "Pause configuration",
         "data_structure": "PauseFlags"
-      },
-      {
-        "name": "DataKey::HistoryPaginationConfig",
-        "type": "instance",
-        "description": "History pagination configuration",
-        "data_structure": "HistoryPaginationConfig"
-      },
-      {
-        "name": "DataKey::SpendLimitSchemaVersion",
-        "type": "instance",
-        "description": "Upgrade-safe version marker for spend-limit threshold storage layout. Increment when MultisigConfig schema changes.",
-        "data_structure": "u32"
-      },
-      {
-        "name": "DataKey::BatchPayoutSchemaVersion",
-        "type": "instance",
-        "description": "Upgrade-safe version marker for batch payout logic. Written at init with value BATCH_PAYOUT_SCHEMA_VERSION_V1=1. Returns 0 on legacy pre-v1 contracts.",
-        "data_structure": "u32"
       },
       {
         "name": "SCHEDULES",
@@ -1726,108 +1354,6 @@
           }
         ],
         "trigger": "Successful single payout"
-      },
-      {
-        "name": "SpendLimitSetEvent",
-        "description": "Audit event emitted after every set_program_spend_threshold call",
-        "topics": [
-          "SpLimSet",
-          "program_id"
-        ],
-        "data": [
-          {
-            "name": "version",
-            "type": "u32",
-            "description": "Always EVENT_VERSION_V2"
-          },
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program the threshold applies to"
-          },
-          {
-            "name": "previous_threshold",
-            "type": "i128",
-            "description": "Previous threshold (i128::MAX = unlimited)"
-          },
-          {
-            "name": "new_threshold",
-            "type": "i128",
-            "description": "New threshold value"
-          },
-          {
-            "name": "set_by",
-            "type": "Address",
-            "description": "Admin that made the change"
-          },
-          {
-            "name": "timestamp",
-            "type": "u64",
-            "description": "Ledger timestamp"
-          }
-        ],
-        "trigger": "Every successful set_program_spend_threshold call"
-      },
-      {
-        "name": "SpendLimitExceededEvent",
-        "description": "Audit event emitted when a payout is rejected for exceeding the spend threshold",
-        "topics": [
-          "SpLimExc",
-          "program_id"
-        ],
-        "data": [
-          {
-            "name": "version",
-            "type": "u32",
-            "description": "Always EVENT_VERSION_V2"
-          },
-          {
-            "name": "program_id",
-            "type": "String",
-            "description": "Program the threshold applies to"
-          },
-          {
-            "name": "requested_amount",
-            "type": "i128",
-            "description": "Amount that was requested and rejected"
-          },
-          {
-            "name": "threshold",
-            "type": "i128",
-            "description": "Configured threshold that was exceeded"
-          },
-          {
-            "name": "timestamp",
-            "type": "u64",
-            "description": "Ledger timestamp"
-          }
-        ],
-        "trigger": "Every payout rejected due to spend threshold violation"
-      },
-      {
-        "name": "SpendLimitSchemaVersionSet",
-        "description": "Upgrade-safe marker recording the spend-limit storage schema version",
-        "topics": [
-          "SpLimSch"
-        ],
-        "data": [
-          {
-            "name": "version",
-            "type": "u32",
-            "description": "Always EVENT_VERSION_V2"
-          },
-          {
-            "name": "schema_version",
-            "type": "u32",
-            "description": "Spend-limit schema version written to instance storage"
-          },
-          {
-            "name": "timestamp",
-            "type": "u64",
-            "description": "Ledger timestamp"
-          }
-        ],
-        "trigger": "Contract initialization (init_program)"
       }
     ]
   },
@@ -1944,7 +1470,7 @@
       ]
     },
     "test_scenarios": [
-      "Complete program lifecycle (init \u2192 fund \u2192 payout)",
+      "Complete program lifecycle (init → fund → payout)",
       "Batch operations with mixed success/failure",
       "Circuit breaker activation and reset",
       "Dependency management with cycle detection",
