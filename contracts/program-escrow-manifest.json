@@ -57,6 +57,18 @@
       },
       {
         "version": "2.3.0",
+        "release_date": "2026-04-27",
+        "changes": [
+          "Enhanced history pagination with deterministic behavior and explicit error codes",
+          "Added upgrade-safe pagination configuration with schema versioning",
+          "Implemented Result-based pagination functions with proper error handling",
+          "Added pagination limit validation with explicit error codes (411-413)",
+          "Improved deterministic ordering and offset validation",
+          "Enhanced cross-function pagination consistency and error handling"
+        ]
+      },
+      {
+        "version": "2.3.0",
         "release_date": "2026-04-23",
         "changes": [
           "Hardened spend-limit threshold enforcement: enforce_spend_threshold now returns Result and emits SpendLimitExceededEvent before any token transfer",
