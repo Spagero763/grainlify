@@ -597,6 +597,16 @@
         "description": {
           "type": "string"
         },
+        "event_version": {
+          "type": "integer",
+          "description": "Schema version of this event struct. Matches the EVENT_SCHEMA_VERSION constant in the contract source. Consumers must validate this field before deserializing event data to detect cross-version incompatibilities.",
+          "minimum": 1
+        },
+        "min_compatible_version": {
+          "type": "integer",
+          "description": "Minimum EVENT_SCHEMA_VERSION value that a consumer can safely deserialize. Useful when a new version adds optional fields that older consumers can ignore.",
+          "minimum": 1
+        },
         "data": {
           "type": "array",
           "description": "Event data fields",

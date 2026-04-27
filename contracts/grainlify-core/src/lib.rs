@@ -45,6 +45,8 @@ pub enum ContractError {
 }
 pub const STORAGE_SCHEMA_VERSION: u32 = 1;
 pub const LIVENESS_SCHEMA_VERSION: u32 = 1;
+/// Version stamp embedded in every event struct for cross-version compatibility checks.
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
 const CONFIG_SNAPSHOT_LIMIT: u32 = 20;
 
 /// Maximum number of deployed contracts that can be registered.
@@ -79,6 +81,8 @@ pub struct UpgradeEvent {
     pub previous_version: u32,
     /// Ledger timestamp when the upgrade was executed.
     pub timestamp: u64,
+    /// Event schema version for cross-version compatibility checks.
+    pub event_version: u32,
 }
 
 /// Emitted when read-only mode is toggled.
@@ -88,6 +92,8 @@ pub struct ReadOnlyModeEvent {
     pub enabled: bool,
     pub admin: Address,
     pub timestamp: u64,
+    /// Event schema version for cross-version compatibility checks.
+    pub event_version: u32,
 }
 
 /// Emitted during contract initialization to record build and deployment information.
@@ -117,6 +123,8 @@ pub struct BuildInfoEvent {
     pub version: u32,
     /// Ledger timestamp when the contract was initialized
     pub timestamp: u64,
+    /// Event schema version for cross-version compatibility checks.
+    pub event_version: u32,
 }
 
 /// Point-in-time snapshot of core configuration.
@@ -181,6 +189,8 @@ pub struct MigrationEvent {
     pub migration_hash: BytesN<32>,
     pub success: bool,
     pub error_message: Option<String>,
+    /// Event schema version for cross-version compatibility checks.
+    pub event_version: u32,
 }
 
 #[contracttype]
@@ -190,6 +200,8 @@ pub struct MigrationCommittedEvent {
     pub hash: BytesN<32>,
     pub committed_at: u64,
     pub expires_at: u64,
+    /// Event schema version for cross-version compatibility checks.
+    pub event_version: u32,
 }
 
 /// Canonical read model for a multisig upgrade proposal.
@@ -837,6 +849,7 @@ impl GrainlifyContract {
                 threshold,
                 version: VERSION,
                 timestamp: env.ledger().timestamp(),
+                event_version: EVENT_SCHEMA_VERSION,
             },
         );
     }
@@ -913,6 +926,7 @@ impl GrainlifyContract {
                 new_wasm_hash: wasm_hash,
                 previous_version: current_version,
                 timestamp: env.ledger().timestamp(),
+                event_version: EVENT_SCHEMA_VERSION,
             },
         );
 
@@ -950,6 +964,7 @@ impl GrainlifyContract {
                 new_wasm_hash,
                 previous_version: current_version,
                 timestamp: env.ledger().timestamp(),
+                event_version: EVENT_SCHEMA_VERSION,
             },
         );
 
@@ -1238,7 +1253,7 @@ impl GrainlifyContract {
         env.storage().instance().set(&DataKey::ReadOnlyMode, &enabled);
         env.events().publish(
             (symbol_short!("ROModeChg"),),
-            ReadOnlyModeEvent { enabled, admin, timestamp: env.ledger().timestamp() },
+            ReadOnlyModeEvent { enabled, admin, timestamp: env.ledger().timestamp(), event_version: EVENT_SCHEMA_VERSION },
         );
     }
 
@@ -2094,6 +2109,22 @@ impl GrainlifyContract {
 fn migrate_v1_to_v2(_env: &Env) {}
 
 fn migrate_v2_to_v3(_env: &Env) {}
+
+// ============================================================================
+// Event Version Compatibility
+// ============================================================================
+
+/// Returns true when `version` matches the current `EVENT_SCHEMA_VERSION`.
+///
+/// Indexers and off-chain consumers should call this guard when deserializing
+/// events so they can surface unknown-version events instead of silently
+/// misinterpreting them.
+pub fn is_compatible_event_version(version: u32) -> bool {
+    version == EVENT_SCHEMA_VERSION
+}
+
+#[cfg(test)]
+mod test_event_versioning;
 
 // ============================================================================
 // Trait Conformance
