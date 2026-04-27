@@ -31,6 +31,14 @@
       },
       {
         "version": "2.1.0",
+        "release_date": "2026-04-26",
+        "changes": [
+          "Enhanced idempotency keys for payouts with deterministic behavior",
+          "Added explicit error codes for idempotency conflicts (410, 411)",
+          "Implemented idempotency key validation (1-128 characters)",
+          "Fixed batch payout to store all recipients and amounts in idempotency record",
+          "Changed idempotency storage from instance to persistent for upgrade safety",
+          "Added comprehensive edge case tests for idempotency keys"
         "release_date": "2026-04-22",
         "changes": [
           "Added deterministic spend-threshold enforcement for single and batch payouts",
@@ -344,6 +352,12 @@
       },
       {
         "name": "single_payout_idempotent",
+        "description": "Distribute prize to single winner with idempotency support",
+        "parameters": [
+          {
+            "name": "recipient",
+            "type": "Address",
+            "description": "Recipient address"
         "description": "Distribute prize to single winner with idempotency key. Panics with 'Payout already processed' if the key was already used for a successful payout — callers should treat this as a success.",
         "parameters": [
           {
@@ -360,6 +374,12 @@
             "name": "amount",
             "type": "i128",
             "description": "Prize amount"
+          },
+          {
+            "name": "idempotency_key",
+            "type": "Option<String>",
+            "description": "Unique key to ensure idempotent behavior. If key already used, returns stored result without re-executing.",
+            "optional": true
           }
         ],
         "returns": {
@@ -368,6 +388,16 @@
         },
         "authorization": "admin",
         "pausable": true,
+        "gas_estimate": "medium"
+      },
+      {
+        "name": "batch_payout_idempotent",
+        "description": "Distribute prizes to multiple winners with idempotency support",
+        "parameters": [
+          {
+            "name": "recipients",
+            "type": "Vec<Address>",
+            "description": "Array of recipient addresses"
         "gas_estimate": "medium",
         "security_notes": [
           "Idempotency check runs before all state reads — duplicate submissions are rejected cheaply.",
@@ -393,6 +423,12 @@
             "name": "amounts",
             "type": "Vec<i128>",
             "description": "Corresponding prize amounts"
+          },
+          {
+            "name": "idempotency_key",
+            "type": "Option<String>",
+            "description": "Unique key to ensure idempotent behavior. If key already used, returns stored result without re-executing.",
+            "optional": true
           }
         ],
         "returns": {
@@ -401,6 +437,7 @@
         },
         "authorization": "admin",
         "pausable": true,
+        "gas_estimate": "high"
         "gas_estimate": "high",
         "security_notes": [
           "Idempotency check runs before all state reads — duplicate submissions are rejected cheaply.",
@@ -796,6 +833,22 @@
         "gas_estimate": "low"
       },
       {
+        "name": "get_idempotency_key_status",
+        "description": "Query idempotency key status",
+        "parameters": [
+          {
+            "name": "idempotency_key",
+            "type": "String",
+            "description": "The idempotency key to query"
+          }
+        ],
+        "returns": {
+          "type": "Option<PayoutIdempotencyKey>",
+          "description": "Some(PayoutIdempotencyKey) if the key exists, None otherwise"
+        },
+        "authorization": "any",
+        "pausable": false,
+        "gas_estimate": "low"
         "name": "query_payouts_by_recipient",
         "description": "Paginated payout history filtered by recipient address",
         "parameters": [
@@ -1411,6 +1464,10 @@
         "data_structure": "Vec<ProgramReleaseSchedule>"
       },
       {
+        "name": "PayoutIdempotency",
+        "type": "instance",
+        "description": "Idempotency key storage for payouts",
+        "data_structure": "PayoutIdempotencyKey"
         "name": "DataKey::IdempotencyKey(String)",
         "type": "persistent",
         "description": "Idempotency key for payout deduplication. Key is the caller-supplied opaque string; value is bool (true = processed). Stored in persistent storage so it survives contract upgrades.",
@@ -1429,6 +1486,11 @@
       "Comprehensive monitoring and analytics",
       "Input validation for all parameters",
       "Overflow protection in arithmetic operations",
+      "Idempotency keys for payout operations with deterministic behavior",
+      "Explicit error codes for idempotency conflicts (410: Conflict, 411: Invalid)",
+      "Idempotency key validation (1-128 characters, format enforcement)",
+      "Upgrade-safe persistent storage for idempotency records",
+      "Complete batch payout data storage in idempotency records"
       "Deterministic spend-threshold checks for payout operations",
       "Deterministic history pagination checks with explicit validation failures"
     ],
@@ -1513,6 +1575,14 @@
         "resolution": "Remove circular dependency references"
       },
       {
+        "error_code": "IdempotencyKeyConflict",
+        "scenario": "Attempting to reuse an idempotency key with different parameters",
+        "resolution": "Use a unique idempotency key for each distinct payout operation"
+      },
+      {
+        "error_code": "IdempotencyKeyInvalid",
+        "scenario": "Idempotency key length is outside valid range (1-128 characters)",
+        "resolution": "Provide an idempotency key between 1 and 128 characters"
         "error_code": "PayoutAlreadyProcessed",
         "numeric_code": 1100,
         "scenario": "Submitting a payout with an idempotency key that was already used for a successful payout",

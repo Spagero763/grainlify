@@ -2652,6 +2652,478 @@ fn test_program_update_fee_config_disables_fees() {
     let _ = admin;
 }
 
+// ============================================================================
+// Idempotency Key Tests
+// ============================================================================
+
+#[test]
+fn test_single_payout_idempotent_first_time() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "payout-001");
+
+    let initial_balance = token_client.balance(&client.address);
+    let data = client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+
+    assert_eq!(data.remaining_balance, 9000);
+    assert_eq!(token_client.balance(&client.address), initial_balance - 1000);
+    assert_eq!(data.payout_history.len(), 1);
+}
+
+#[test]
+fn test_single_payout_idempotent_replay() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "payout-001");
+
+    // First payout
+    let data1 = client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    let balance_after_first = token_client.balance(&client.address);
+    assert_eq!(data1.remaining_balance, 9000);
+    assert_eq!(data1.payout_history.len(), 1);
+
+    // Replay with same key - should not execute again
+    let data2 = client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    let balance_after_replay = token_client.balance(&client.address);
+
+    // Balance should be the same (no double payout)
+    assert_eq!(balance_after_first, balance_after_replay);
+    assert_eq!(data2.remaining_balance, 9000);
+    // Payout history should still have only 1 entry
+    assert_eq!(data2.payout_history.len(), 1);
+}
+
+#[test]
+fn test_single_payout_idempotent_different_keys() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let key1 = String::from_str(&env, "payout-001");
+    let key2 = String::from_str(&env, "payout-002");
+
+    // First payout with key1
+    let data1 = client.single_payout_idempotent(&recipient, &1000, &Some(key1.clone()));
+    assert_eq!(data1.remaining_balance, 9000);
+    assert_eq!(data1.payout_history.len(), 1);
+
+    // Second payout with key2 - should execute
+    let data2 = client.single_payout_idempotent(&recipient, &1000, &Some(key2.clone()));
+    assert_eq!(data2.remaining_balance, 8000);
+    assert_eq!(data2.payout_history.len(), 2);
+}
+
+#[test]
+fn test_single_payout_idempotent_without_key() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+
+    // Payout without idempotency key - should work like regular payout
+    let data = client.single_payout_idempotent(&recipient, &1000, &None);
+    assert_eq!(data.remaining_balance, 9000);
+    assert_eq!(data.payout_history.len(), 1);
+}
+
+#[test]
+fn test_batch_payout_idempotent_first_time() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 1000, 2000];
+    let idempotency_key = String::from_str(&env, "batch-payout-001");
+
+    let initial_balance = token_client.balance(&client.address);
+    let data = client.batch_payout_idempotent(&recipients, &amounts, &Some(idempotency_key.clone()));
+
+    assert_eq!(data.remaining_balance, 7000);
+    assert_eq!(token_client.balance(&client.address), initial_balance - 3000);
+    assert_eq!(data.payout_history.len(), 2);
+}
+
+#[test]
+fn test_batch_payout_idempotent_replay() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 1000, 2000];
+    let idempotency_key = String::from_str(&env, "batch-payout-001");
+
+    // First batch payout
+    let data1 = client.batch_payout_idempotent(&recipients, &amounts, &Some(idempotency_key.clone()));
+    let balance_after_first = token_client.balance(&client.address);
+    assert_eq!(data1.remaining_balance, 7000);
+    assert_eq!(data1.payout_history.len(), 2);
+
+    // Replay with same key - should not execute again
+    let data2 = client.batch_payout_idempotent(&recipients, &amounts, &Some(idempotency_key.clone()));
+    let balance_after_replay = token_client.balance(&client.address);
+
+    // Balance should be the same (no double payout)
+    assert_eq!(balance_after_first, balance_after_replay);
+    assert_eq!(data2.remaining_balance, 7000);
+    // Payout history should still have only 2 entries
+    assert_eq!(data2.payout_history.len(), 2);
+}
+
+#[test]
+fn test_batch_payout_idempotent_different_keys() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 1000, 2000];
+    let key1 = String::from_str(&env, "batch-payout-001");
+    let key2 = String::from_str(&env, "batch-payout-002");
+
+    // First batch payout with key1
+    let data1 = client.batch_payout_idempotent(&recipients, &amounts, &Some(key1.clone()));
+    assert_eq!(data1.remaining_balance, 7000);
+    assert_eq!(data1.payout_history.len(), 2);
+
+    // Second batch payout with key2 - should execute
+    let data2 = client.batch_payout_idempotent(&recipients, &amounts, &Some(key2.clone()));
+    assert_eq!(data2.remaining_balance, 4000);
+    assert_eq!(data2.payout_history.len(), 4);
+}
+
+#[test]
+fn test_get_idempotency_key_status_exists() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "payout-001");
+
+    // Execute payout with idempotency key
+    client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+
+    // Query the idempotency key status
+    let status = client.get_idempotency_key_status(&idempotency_key);
+    assert!(status.is_some());
+
+    let record = status.unwrap();
+    assert_eq!(record.key, idempotency_key);
+    assert_eq!(record.amount, 1000);
+    assert_eq!(record.recipient, recipient);
+}
+
+#[test]
+fn test_get_idempotency_key_status_not_exists() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let non_existent_key = String::from_str(&env, "non-existent-key");
+
+    // Query a non-existent idempotency key
+    let status = client.get_idempotency_key_status(&non_existent_key);
+    assert!(status.is_none());
+}
+
+#[test]
+fn test_idempotency_key_security_no_unauthorized_replay() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let token_client = token::Client::new(&env, &token_id);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let program_id = String::from_str(&env, "hack-2026");
+    let payout_key = Address::generate(&env);
+    client.init_program(&program_id, &admin, &token_id, &payout_key, &None, &None);
+
+    token_admin_client.mint(&client.address, &10_000);
+    client.lock_program_funds(&10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "payout-001");
+
+    // Execute payout with authorized key
+    env.mock_auths(&[
+        soroban_sdk::testutils::MockAuth {
+            address: &payout_key,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "single_payout_idempotent",
+                args: (recipient.clone(), 1000i128, Some(idempotency_key.clone())).into_val(&env),
+                sub_invokes: &[],
+            },
+        }.into()]);
+    
+    let data1 = client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    assert_eq!(data1.remaining_balance, 9000);
+
+    // Replay should work without auth (idempotent read)
+    let data2 = client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    assert_eq!(data2.remaining_balance, 9000);
+}
+
+#[test]
+fn test_idempotency_key_edge_case_empty_string() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let empty_key = String::from_str(&env, "");
+
+    // Empty string key should be rejected (minimum length is 1)
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout_idempotent(&recipient, &1000, &Some(empty_key.clone()));
+    });
+    assert!(result.is_err(), "Should reject empty idempotency key");
+}
+
+#[test]
+fn test_idempotency_key_storage_persistence() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let key1 = String::from_str(&env, "payout-001");
+    let key2 = String::from_str(&env, "payout-002");
+
+    // Execute two payouts with different keys
+    client.single_payout_idempotent(&recipient1, &1000, &Some(key1.clone()));
+    client.single_payout_idempotent(&recipient2, &2000, &Some(key2.clone()));
+
+    // Both keys should exist in storage
+    let status1 = client.get_idempotency_key_status(&key1);
+    let status2 = client.get_idempotency_key_status(&key2);
+
+    assert!(status1.is_some());
+    assert!(status2.is_some());
+
+    let record1 = status1.unwrap();
+    let record2 = status2.unwrap();
+
+    assert_eq!(record1.recipient, recipient1);
+    assert_eq!(record1.amount, 1000);
+    assert_eq!(record2.recipient, recipient2);
+    assert_eq!(record2.amount, 2000);
+}
+
+#[test]
+fn test_mixed_idempotent_and_regular_payouts() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "payout-001");
+
+    // Regular payout (no idempotency)
+    client.single_payout(&recipient, &1000);
+    let data1 = client.get_program_info();
+    assert_eq!(data1.remaining_balance, 9000);
+    assert_eq!(data1.payout_history.len(), 1);
+
+    // Idempotent payout with key
+    client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    let data2 = client.get_program_info();
+    assert_eq!(data2.remaining_balance, 8000);
+    assert_eq!(data2.payout_history.len(), 2);
+
+    // Replay idempotent payout - should not execute
+    client.single_payout_idempotent(&recipient, &1000, &Some(idempotency_key.clone()));
+    let data3 = client.get_program_info();
+    assert_eq!(data3.remaining_balance, 8000);
+    assert_eq!(data3.payout_history.len(), 2);
+
+    // Another regular payout
+    client.single_payout(&recipient, &1000);
+    let data4 = client.get_program_info();
+    assert_eq!(data4.remaining_balance, 7000);
+    assert_eq!(data4.payout_history.len(), 3);
+}
+
+#[test]
+fn test_idempotency_key_too_long() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    // Create a key that's too long (> 128 characters)
+    let long_key = String::from_str(&env, "a".repeat(129).as_str());
+
+    // Should panic with IdempotencyKeyInvalid
+    let result = std::panic::catch_unwind(|| {
+        client.single_payout_idempotent(&recipient, &1000, &Some(long_key));
+    });
+    assert!(result.is_err(), "Should reject idempotency key that's too long");
+}
+
+#[test]
+fn test_batch_idempotency_stores_all_recipients() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipient3 = Address::generate(&env);
+    let recipients = vec![&env, recipient1.clone(), recipient2.clone(), recipient3.clone()];
+    let amounts = vec![&env, 1000, 2000, 3000];
+    let idempotency_key = String::from_str(&env, "batch-all-recipients");
+
+    // Execute batch payout
+    client.batch_payout_idempotent(&recipients, &amounts, &Some(idempotency_key.clone()));
+
+    // Query the idempotency key status
+    let status = client.get_idempotency_key_status(&idempotency_key);
+    assert!(status.is_some());
+
+    let record = status.unwrap();
+    assert_eq!(record.key, idempotency_key);
+    assert_eq!(record.total_amount, 6000);
+    
+    // Verify batch recipients are stored
+    assert!(record.recipients.is_some());
+    let stored_recipients = record.recipients.unwrap();
+    assert_eq!(stored_recipients.len(), 3);
+    assert_eq!(stored_recipients.get(0), recipient1);
+    assert_eq!(stored_recipients.get(1), recipient2);
+    assert_eq!(stored_recipients.get(2), recipient3);
+    
+    // Verify batch amounts are stored
+    assert!(record.amounts.is_some());
+    let stored_amounts = record.amounts.unwrap();
+    assert_eq!(stored_amounts.len(), 3);
+    assert_eq!(stored_amounts.get(0), 1000);
+    assert_eq!(stored_amounts.get(1), 2000);
+    assert_eq!(stored_amounts.get(2), 3000);
+}
+
+#[test]
+fn test_single_idempotency_stores_correct_fields() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    let idempotency_key = String::from_str(&env, "single-test");
+    let amount = 1500;
+
+    // Execute single payout
+    client.single_payout_idempotent(&recipient, &amount, &Some(idempotency_key.clone()));
+
+    // Query the idempotency key status
+    let status = client.get_idempotency_key_status(&idempotency_key);
+    assert!(status.is_some());
+
+    let record = status.unwrap();
+    assert_eq!(record.key, idempotency_key);
+    assert_eq!(record.total_amount, amount);
+    
+    // Verify single payout fields
+    assert!(record.recipient.is_some());
+    assert_eq!(record.recipient.unwrap(), recipient);
+    assert!(record.amount.is_some());
+    assert_eq!(record.amount.unwrap(), amount);
+    
+    // Verify batch fields are None
+    assert!(record.recipients.is_none());
+    assert!(record.amounts.is_none());
+}
+
+#[test]
+fn test_idempotency_key_max_length_boundary() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    // Create a key that's exactly at the max length (128 characters)
+    let max_key = String::from_str(&env, "a".repeat(128).as_str());
+
+    // Should work fine
+    let data = client.single_payout_idempotent(&recipient, &1000, &Some(max_key.clone()));
+    assert_eq!(data.remaining_balance, 9000);
+
+    // Replay should be idempotent
+    let data2 = client.single_payout_idempotent(&recipient, &1000, &Some(max_key.clone()));
+    assert_eq!(data2.remaining_balance, 9000);
+    assert_eq!(data2.payout_history.len(), 1);
+}
+
+#[test]
+fn test_idempotency_across_different_programs() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Setup first program
+    let contract_id = env.register_contract(None, ProgramEscrowContract);
+    let client = ProgramEscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let token_client = token::Client::new(&env, &token_id);
+    let token_admin_client = token::StellarAssetClient::new(&env, &token_id);
+
+    let program_id1 = String::from_str(&env, "program-1");
+    let payout_key1 = Address::generate(&env);
+    client.init_program(&program_id1, &admin, &token_id, &payout_key1, &None, &None);
+
+    token_admin_client.mint(&client.address, &20_000);
+    client.lock_program_funds(&20_000);
+
+    // Execute payout with key in program 1
+    let recipient1 = Address::generate(&env);
+    let shared_key = String::from_str(&env, "shared-key-001");
+    client.single_payout_idempotent(&recipient1, &1000, &Some(shared_key.clone()));
+
+    // Verify key is stored
+    let status1 = client.get_idempotency_key_status(&shared_key);
+    assert!(status1.is_some());
+    assert_eq!(status1.unwrap().program_id, program_id1);
+}
+
+#[test]
+fn test_idempotency_key_with_special_characters() {
+    let env = Env::default();
+    let (client, _admin, _token_client, _token_admin) = setup_program(&env, 10_000);
+
+    let recipient = Address::generate(&env);
+    // Test with UUID-like format
+    let uuid_key = String::from_str(&env, "550e8400-e29b-41d4-a716-446655440000");
+    
+    let data = client.single_payout_idempotent(&recipient, &1000, &Some(uuid_key.clone()));
+    assert_eq!(data.remaining_balance, 9000);
+
+    // Replay should be idempotent
+    let data2 = client.single_payout_idempotent(&recipient, &1000, &Some(uuid_key.clone()));
+    assert_eq!(data2.remaining_balance, 9000);
+    assert_eq!(data2.payout_history.len(), 1);
+
+    // Test with path-like format
+    let path_key = String::from_str(&env, "payouts/2024/01/batch-001");
+    let recipient2 = Address::generate(&env);
+    let data3 = client.single_payout_idempotent(&recipient2, &2000, &Some(path_key.clone()));
+    assert_eq!(data3.remaining_balance, 7000);
+}
+
+#[test]
+fn test_batch_payout_idempotent_replay_different_params() {
+    let env = Env::default();
+    let (client, _admin, token_client, _token_admin) = setup_program(&env, 10_000);
 // =============================================================================
 // SPEND LIMIT THRESHOLD TESTS (Issue #15)
 // =============================================================================
@@ -3718,6 +4190,29 @@ fn test_idempotency_key_operation_isolation() {
     let recipient1 = Address::generate(&env);
     let recipient2 = Address::generate(&env);
     let recipients = vec![&env, recipient1.clone(), recipient2.clone()];
+    let amounts = vec![&env, 1000, 2000];
+    let idempotency_key = String::from_str(&env, "batch-replay-test");
+
+    // First batch payout
+    let data1 = client.batch_payout_idempotent(&recipients, &amounts, &Some(idempotency_key.clone()));
+    let balance_after_first = token_client.balance(&client.address);
+    assert_eq!(data1.remaining_balance, 7000);
+
+    // Try to replay with DIFFERENT recipients and amounts - should still be idempotent
+    let recipient3 = Address::generate(&env);
+    let different_recipients = vec![&env, recipient3.clone()];
+    let different_amounts = vec![&env, 5000];
+    
+    // This should return the original result, not execute with new params
+    let data2 = client.batch_payout_idempotent(&different_recipients, &different_amounts, &Some(idempotency_key.clone()));
+    let balance_after_replay = token_client.balance(&client.address);
+
+    // Balance should be the same (no execution with different params)
+    assert_eq!(balance_after_first, balance_after_replay);
+    assert_eq!(data2.remaining_balance, 7000);
+    assert_eq!(data2.payout_history.len(), 2); // Still only 2 from first payout
+}
+
     let batch_amounts = vec![&env, 100_0000000, 100_0000000];
     let single_amount = 200_0000000;
     let idempotency_key = String::from_str(&env, "test-isolation-333");

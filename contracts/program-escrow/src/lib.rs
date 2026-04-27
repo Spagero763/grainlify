@@ -314,6 +314,29 @@ mod monitoring {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutIdempotencyKey {
+    pub key: String,                    // Unique idempotency key provided by caller
+    pub program_id: String,             // Program this payout belongs to
+    pub payout_type: PayoutType,        // Single or batch payout
+    pub timestamp: u64,                 // When the payout was executed
+    // For single payouts
+    pub recipient: Option<Address>,     // Single payout recipient (None for batch)
+    pub amount: Option<i128>,           // Single payout amount (None for batch)
+    // For batch payouts
+    pub recipients: Option<Vec<Address>>, // Batch payout recipients (None for single)
+    pub amounts: Option<Vec<i128>>,       // Batch payout amounts (None for single)
+    pub total_amount: i128,              // Total payout amount (for both single and batch)
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PayoutType {
+    Single,
+    Batch(u32), // Batch index (for batch payouts, stores the recipient index)
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PayoutRecord {
     pub recipient: Address,
     pub amount: i128,
@@ -944,6 +967,9 @@ pub enum DataKey {
     MaintenanceMode,                 // bool flag
     ProgramDependencies(String),     // program_id -> Vec<String>
     DependencyStatus(String),        // program_id -> DependencyStatus
+    Dispute,  
+    DisputeRecord(String),                     // DisputeRecord (single active dispute per contract)
+    PayoutIdempotency(String),                 // idempotency_key -> PayoutIdempotencyKey
     Dispute,                         // DisputeRecord (single active dispute per contract)
     HistoryPaginationConfig,         // HistoryPaginationConfig
     /// Upgrade-safe schema version marker for spend-limit threshold storage.
@@ -1259,6 +1285,8 @@ pub enum BatchError {
     Unauthorized = 3,
     FundsPaused = 407,
     DuplicateScheduleId = 408,
+    IdempotencyKeyConflict = 410,
+    IdempotencyKeyInvalid = 411,
     InvalidMerkleRoot = 409,
     BatchReceiptNotFound = 410,
 }
@@ -1283,6 +1311,14 @@ pub const SPEND_LIMIT_SCHEMA_VERSION_V1: u32 = 1;
 /// detect schema mismatches on legacy deployments.
 pub const PAUSE_SCHEMA_VERSION_V1: u32 = 1;
 
+// Idempotency key constraints
+const MAX_IDEMPOTENCY_KEY_LENGTH: u32 = 128; // Maximum 128 characters
+const MIN_IDEMPOTENCY_KEY_LENGTH: u32 = 1;   // Minimum 1 character (non-empty)
+
+// Constants for program scheduling
+const BASE_FEE: i128 = 100;
+const MIN_INCREMENT: u64 = 86400; // 1 day in seconds
+const MAX_SLOTS: usize = 1000;
 /// Current release schedule storage schema version.
 ///
 /// Increment whenever `ProgramReleaseSchedule` layout changes in a breaking way.
@@ -3670,6 +3706,75 @@ impl ProgramEscrowContract {
     // Per-Window Spending Limits (Issue #25)
     // ========================================================================
 
+    /// Check if an idempotency key has already been used
+    /// Returns Some(PayoutIdempotencyKey) if the key exists, None otherwise
+    fn check_idempotency_key(env: &Env, idempotency_key: &String) -> Option<PayoutIdempotencyKey> {
+        let key = DataKey::PayoutIdempotency(idempotency_key.clone());
+        // Use persistent storage for upgrade safety
+        env.storage().persistent().get(&key)
+    }
+
+    /// Store an idempotency key with its payout information
+    fn store_idempotency_key(
+        env: &Env,
+        idempotency_key: &String,
+        program_id: &String,
+        payout_type: PayoutType,
+        recipient: Option<Address>,
+        amount: Option<i128>,
+        recipients: Option<Vec<Address>>,
+        amounts: Option<Vec<i128>>,
+        total_amount: i128,
+    ) {
+        let timestamp = env.ledger().timestamp();
+        let payout_record = PayoutIdempotencyKey {
+            key: idempotency_key.clone(),
+            program_id: program_id.clone(),
+            payout_type,
+            timestamp,
+            recipient,
+            amount,
+            recipients,
+            amounts,
+            total_amount,
+        };
+        let key = DataKey::PayoutIdempotency(idempotency_key.clone());
+        // Use persistent storage for upgrade safety
+        env.storage().persistent().set(&key, &payout_record);
+    }
+
+    /// Validate and check idempotency key
+    /// If key already exists, returns the stored payout record (for idempotent replay)
+    /// If key is new, returns None (caller should proceed with payout)
+    fn validate_idempotency_key(
+        env: &Env,
+        idempotency_key: &Option<String>,
+    ) -> Option<PayoutIdempotencyKey> {
+        match idempotency_key {
+            Some(key) => {
+                // Validate key length
+                let key_len = key.len();
+                if key_len < MIN_IDEMPOTENCY_KEY_LENGTH || key_len > MAX_IDEMPOTENCY_KEY_LENGTH {
+                    panic!("IdempotencyKeyInvalid");
+                }
+                
+                Self::check_idempotency_key(env, key)
+            }
+            None => None,
+        }
+    }
+
+    /// Validate idempotency key format without checking storage
+    /// Returns Ok(()) if valid, panics with explicit error if invalid
+    fn validate_idempotency_key_format(key: &String) {
+        let key_len = key.len();
+        if key_len < MIN_IDEMPOTENCY_KEY_LENGTH {
+            panic!("IdempotencyKeyInvalid");
+        }
+        if key_len > MAX_IDEMPOTENCY_KEY_LENGTH {
+            panic!("IdempotencyKeyInvalid");
+        }
+    }
     /// Set or update the per-window spending limit for a program.
     ///
     /// Only the program's `authorized_payout_key` may call this.
@@ -4407,6 +4512,97 @@ impl ProgramEscrowContract {
             .unwrap_or(0u32)
     }
 
+    /// Execute batch payouts with idempotency support.
+    ///
+    /// # Arguments
+    /// * `recipients` - Vector of winner addresses.
+    /// * `amounts` - Vector of prize amounts (must match recipients length).
+    /// * `idempotency_key` - Optional unique key to ensure idempotent behavior.
+    ///
+    /// # Returns
+    /// The updated `ProgramData` reflecting the new balance and payout history.
+    ///
+    /// # Idempotency
+    /// - If `idempotency_key` is provided and already used, returns the stored result without re-executing.
+    /// - If `idempotency_key` is provided and new, executes the payout and stores the key.
+    /// - If `idempotency_key` is None, behaves like regular batch_payout.
+    ///
+    /// # Security
+    /// - Requires authorization from the `authorized_payout_key`.
+    /// - Protected by reentrancy guard.
+    /// - Respects circuit breaker and threshold limits.
+    pub fn batch_payout_idempotent(
+        env: Env,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        Self::batch_payout_idempotent_internal(env, None, recipients, amounts, idempotency_key)
+    }
+
+    pub fn batch_payout_idempotent_by(
+        env: Env,
+        caller: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        Self::batch_payout_idempotent_internal(env, Some(caller), recipients, amounts, idempotency_key)
+    }
+
+    fn batch_payout_idempotent_internal(
+        env: Env,
+        caller: Option<Address>,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        // Check if idempotency key already exists
+        if let Some(existing_record) = Self::validate_idempotency_key(&env, &idempotency_key) {
+            // Key already used - return existing state without re-executing
+            // This ensures idempotent behavior
+            let program_data: ProgramData = env
+                .storage()
+                .instance()
+                .get(&PROGRAM_DATA)
+                .unwrap_or_else(|| panic!("Program not initialized"));
+            
+            // Emit event indicating idempotent replay
+            env.events().publish(
+                (symbol_short!("IdmReplay"),),
+                (existing_record.key.clone(), existing_record.program_id.clone(), existing_record.total_amount),
+            );
+            
+            return program_data;
+        }
+
+        // Execute normal batch payout
+        let program_data = Self::batch_payout_internal(env.clone(), caller, recipients.clone(), amounts.clone());
+
+        // Store idempotency key if provided (store all recipients and amounts)
+        if let Some(key) = &idempotency_key {
+            // Calculate total amount
+            let mut total_amount: i128 = 0;
+            for amount in amounts.iter() {
+                total_amount = crate::token_math::safe_add(total_amount, amount);
+            }
+            
+            Self::store_idempotency_key(
+                &env,
+                key,
+                &program_data.program_id,
+                PayoutType::Batch(recipients.len() as u32),
+                None, // No single recipient for batch
+                None, // No single amount for batch
+                Some(recipients),
+                Some(amounts),
+                total_amount,
+            );
+        }
+
+        program_data
+    }
+
     /// Execute a single payout to one winner.
     ///
     /// # Arguments
@@ -4616,6 +4812,91 @@ impl ProgramEscrowContract {
         reentrancy_guard::release(&env);
 
         updated_data
+    }
+
+    /// Execute a single payout with idempotency support.
+    ///
+    /// # Arguments
+    /// * `recipient` - Address of the winner.
+    /// * `amount` - Amount to transfer.
+    /// * `idempotency_key` - Optional unique key to ensure idempotent behavior.
+    ///
+    /// # Returns
+    /// The updated `ProgramData` reflecting the new balance and payout history.
+    ///
+    /// # Idempotency
+    /// - If `idempotency_key` is provided and already used, returns the stored result without re-executing.
+    /// - If `idempotency_key` is provided and new, executes the payout and stores the key.
+    /// - If `idempotency_key` is None, behaves like regular single_payout.
+    ///
+    /// # Security
+    /// - Requires authorization from the `authorized_payout_key`.
+    /// - Protected by reentrancy guard.
+    /// - Respects circuit breaker and threshold limits.
+    pub fn single_payout_idempotent(
+        env: Env,
+        recipient: Address,
+        amount: i128,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        Self::single_payout_idempotent_internal(env, None, recipient, amount, idempotency_key)
+    }
+
+    pub fn single_payout_idempotent_by(
+        env: Env,
+        caller: Address,
+        recipient: Address,
+        amount: i128,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        Self::single_payout_idempotent_internal(env, Some(caller), recipient, amount, idempotency_key)
+    }
+
+    fn single_payout_idempotent_internal(
+        env: Env,
+        caller: Option<Address>,
+        recipient: Address,
+        amount: i128,
+        idempotency_key: Option<String>,
+    ) -> ProgramData {
+        // Check if idempotency key already exists
+        if let Some(existing_record) = Self::validate_idempotency_key(&env, &idempotency_key) {
+            // Key already used - return existing state without re-executing
+            // This ensures idempotent behavior
+            let program_data: ProgramData = env
+                .storage()
+                .instance()
+                .get(&PROGRAM_DATA)
+                .unwrap_or_else(|| panic!("Program not initialized"));
+            
+            // Emit event indicating idempotent replay
+            env.events().publish(
+                (symbol_short!("IdmReplay"),),
+                (existing_record.key.clone(), existing_record.program_id.clone(), existing_record.total_amount),
+            );
+            
+            return program_data;
+        }
+
+        // Execute normal payout
+        let program_data = Self::single_payout_internal(env.clone(), caller, recipient.clone(), amount);
+
+        // Store idempotency key if provided
+        if let Some(key) = &idempotency_key {
+            Self::store_idempotency_key(
+                &env,
+                key,
+                &program_data.program_id,
+                PayoutType::Single,
+                Some(recipient),
+                Some(amount),
+                None, // No batch recipients for single
+                None, // No batch amounts for single
+                amount,
+            );
+        }
+
+        program_data
     }
 
     /// Get program information
@@ -5256,6 +5537,20 @@ impl ProgramEscrowContract {
         Self::paginate_filtered(&env, program_data.payout_history, offset, limit, |record| {
             record.recipient == recipient
         })
+    }
+
+    /// Query idempotency key status
+    ///
+    /// # Arguments
+    /// * `idempotency_key` - The idempotency key to query
+    ///
+    /// # Returns
+    /// Some(PayoutIdempotencyKey) if the key exists, None otherwise
+    pub fn get_idempotency_key_status(
+        env: Env,
+        idempotency_key: String,
+    ) -> Option<PayoutIdempotencyKey> {
+        Self::check_idempotency_key(&env, &idempotency_key)
     }
 
     /// Query payout history by amount range
