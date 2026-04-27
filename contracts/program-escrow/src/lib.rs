@@ -4353,14 +4353,7 @@ impl ProgramEscrowContract {
 
             if pay_fee > 0 {
                 token_client.transfer(&contract_address, &cfg.fee_recipient, &pay_fee);
-                Self::emit_fee_collected(
-                    &env,
-                    symbol_short!("payout"),
-                    pay_fee,
-                    cfg.payout_fee_rate,
-                    cfg.payout_fixed_fee,
-                    cfg.fee_recipient.clone(),
-                );
+                Self::emit_fee_collected(&env, symbol_short!("payout"), pay_fee, cfg.payout_fee_rate, cfg.payout_fixed_fee, cfg.fee_recipient.clone());
             }
             token_client.transfer(&contract_address, &recipient, &net);
             error_recovery::record_success(&env);
