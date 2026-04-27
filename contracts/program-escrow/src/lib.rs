@@ -2041,6 +2041,8 @@ impl ProgramEscrowContract {
                 return Err(BatchError::InvalidBatchSizeProgram);
             }
 
+            Self::enforce_token_allowlist(&env, &token_address, &program_id);
+
             let program_data = ProgramData {
                 program_id: program_id.clone(),
                 total_funds: 0,
