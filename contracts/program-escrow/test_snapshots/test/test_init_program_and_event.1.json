@@ -633,6 +633,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "SpendLimitSchemaVersion"
                             }
                           ]
