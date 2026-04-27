@@ -32,11 +32,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "hack-2026"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -609,7 +605,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Active"
+                                    "symbol": "Draft"
                                   }
                                 ]
                               }
@@ -649,6 +645,18 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -1330,9 +1338,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "hack-2026"
-            }
+            "data": "void"
           }
         }
       },

@@ -32,11 +32,7 @@
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "function_name": "publish_program",
-              "args": [
-                {
-                  "string": "hack-2026"
-                }
-              ]
+              "args": []
             }
           },
           "sub_invocations": []
@@ -673,6 +669,18 @@
                         },
                         "val": {
                           "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ReleaseTriggerSchemaVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       },
                       {
@@ -1460,9 +1468,7 @@
                 "symbol": "publish_program"
               }
             ],
-            "data": {
-              "string": "hack-2026"
-            }
+            "data": "void"
           }
         }
       },
@@ -2015,7 +2021,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           }
@@ -2038,7 +2045,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Recipients and amounts vectors must have the same length' from contract function 'Symbol(obj#901)'"
+                  "string": "caught panic 'Recipients and amounts vectors must have the same length' from contract function 'Symbol(obj#885)'"
                 },
                 {
                   "vec": [
@@ -2059,7 +2066,8 @@
                       }
                     }
                   ]
-                }
+                },
+                "void"
               ]
             }
           }
@@ -2138,7 +2146,8 @@
                           }
                         }
                       ]
-                    }
+                    },
+                    "void"
                   ]
                 }
               ]

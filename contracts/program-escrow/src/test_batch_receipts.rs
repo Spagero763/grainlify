@@ -21,7 +21,7 @@ fn test_batch_payout_with_receipt() {
 
     let program_id = String::from_str(&env, "hack-merkle-06");
     client.init_program(&program_id, &admin, &token_id, &admin, &None, &None);
-    client.publish_program(&program_id);
+    client.publish_program();
 
     token_admin_client.mint(&client.address, &10_000_000);
     client.lock_program_funds_v2(&program_id, &10_000_000);
@@ -41,7 +41,7 @@ fn test_batch_payout_with_receipt() {
     assert_eq!(receipt.merkle_root, merkle_root);
 
     let stored_receipt = client.get_batch_receipt(&0);
-    assert_eq!(stored_receipt, receipt);
+    assert_eq!(stored_receipt, Some(receipt));
 
     let balance1 = token_client.balance(&recipient1);
     let balance2 = token_client.balance(&recipient2);

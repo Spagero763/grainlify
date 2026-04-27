@@ -4,21 +4,26 @@
   "contract_purpose": "Provides secure contract upgrade mechanism with version tracking, migration support, multisig governance, and comprehensive monitoring capabilities",
   "error_registry": {
     "codes": [
-      { "code": 1, "name": "AlreadyInitialized", "description": "Contract already initialized" },
-      { "code": 2, "name": "NotInitialized", "description": "Contract not initialized" },
-      { "code": 3, "name": "NotAdmin", "description": "Caller is not admin" },
-      { "code": 101, "name": "ThresholdNotMet", "description": "Multisig threshold not met" },
-      { "code": 102, "name": "ProposalNotFound", "description": "Upgrade proposal not found" },
-      { "code": 103, "name": "MigrationCommitmentNotFound", "description": "Migration hash commitment not found" },
-      { "code": 104, "name": "MigrationHashMismatch", "description": "Migration hash does not match committed hash" },
-      { "code": 105, "name": "TimelockDelayTooHigh", "description": "Timelock delay exceeds maximum" },
-      { "code": 106, "name": "SnapshotRestoreAdminPending", "description": "Snapshot restore requires admin confirmation" },
-      { "code": 107, "name": "SnapshotPruned", "description": "Snapshot was pruned and is no longer available" }
+      { "code": 1, "name": "AlreadyInitialized", "description": "Contract already initialized", "range": "common", "added_in": "1.0.0" },
+      { "code": 2, "name": "NotInitialized", "description": "Contract not initialized", "range": "common", "added_in": "1.0.0" },
+      { "code": 3, "name": "NotAdmin", "description": "Caller is not admin", "range": "common", "added_in": "1.0.0" },
+      { "code": 101, "name": "ThresholdNotMet", "description": "Multisig threshold not met", "range": "governance", "added_in": "2.0.0" },
+      { "code": 102, "name": "ProposalNotFound", "description": "Upgrade proposal not found", "range": "governance", "added_in": "2.0.0" },
+      { "code": 103, "name": "MigrationCommitmentNotFound", "description": "Migration hash commitment not found", "range": "governance", "added_in": "2.0.0" },
+      { "code": 104, "name": "MigrationHashMismatch", "description": "Migration hash does not match committed hash", "range": "governance", "added_in": "2.0.0" },
+      { "code": 105, "name": "TimelockDelayTooHigh", "description": "Timelock delay exceeds maximum allowed value", "range": "governance", "added_in": "2.0.0" },
+      { "code": 106, "name": "SnapshotRestoreAdminPending", "description": "Snapshot restore requires two-step admin confirmation", "range": "governance", "added_in": "2.2.0" },
+      { "code": 107, "name": "SnapshotPruned", "description": "Snapshot was pruned and is no longer available", "range": "governance", "added_in": "2.2.0" }
     ],
     "ranges": [
-      { "name": "common", "min": 1, "max": 100, "description": "Common initialization and auth errors" },
-      { "name": "governance", "min": 101, "max": 200, "description": "Upgrade and snapshot errors" }
-    ]
+      { "name": "common", "min": 1, "max": 99, "description": "Common initialization and authorization errors" },
+      { "name": "governance", "min": 100, "max": 199, "description": "Upgrade, migration, and snapshot governance errors" }
+    ],
+    "cross_contract_validation": {
+      "allow_conflicts": false,
+      "conflict_resolution": "warning",
+      "excluded_contracts": []
+    }
   },
   "version": {
     "current": "2.2.0",
