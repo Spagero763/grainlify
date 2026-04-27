@@ -1054,7 +1054,15 @@ pub struct RateLimitConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryPaginationConfig {
     pub max_limit: u32,
+    pub schema_version: u32,
 }
+
+/// Current history pagination storage schema version.
+///
+/// Increment whenever `HistoryPaginationConfig` layout changes in a breaking way.
+/// Written to instance storage during `init` so upgrade safety checks can
+/// detect schema mismatches on legacy deployments.
+pub const PAGINATION_SCHEMA_VERSION_V1: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1241,6 +1249,9 @@ pub enum BatchError {
     DuplicateScheduleId = 408,
     InvalidMerkleRoot = 409,
     BatchReceiptNotFound = 410,
+    InvalidPaginationLimit = 411,
+    PaginationLimitExceeded = 412,
+    InvalidPaginationOffset = 413,
 }
 
 pub const MAX_BATCH_SIZE: u32 = 100;
@@ -1277,6 +1288,7 @@ pub const RELEASE_TRIGGER_SCHEMA_VERSION_V1: u32 = 1;
 fn default_history_pagination_config() -> HistoryPaginationConfig {
     HistoryPaginationConfig {
         max_limit: DEFAULT_MAX_HISTORY_PAGE_LIMIT,
+        schema_version: PAGINATION_SCHEMA_VERSION_V1,
     }
 }
 
@@ -1419,14 +1431,28 @@ impl ProgramEscrowContract {
         }
     }
 
-    fn validate_pagination(env: &Env, limit: u32) {
-        if limit == 0 {
-            panic!("Pagination limit must be greater than zero");
+    fn validate_pagination_schema(env: &Env) -> Result<(), BatchError> {
+        let config = Self::get_history_pagination_config(env);
+        if config.schema_version != PAGINATION_SCHEMA_VERSION_V1 {
+            return Err(BatchError::InvalidPaginationOffset);
         }
+        Ok(())
+    }
+
+    fn validate_pagination(env: &Env, limit: u32) -> Result<(), Error> {
+        if limit == 0 {
+            return Err(Error::InvalidPaginationLimit);
+        }
+        
+        // Validate schema version for upgrade safety
+        Self::validate_pagination_schema(env)
+            .map_err(|_| Error::InvalidPaginationOffset)?;
+        
         let cfg = Self::get_history_pagination_config(env);
         if limit > cfg.max_limit {
-            panic!("Pagination limit exceeds maximum");
+            return Err(Error::PaginationLimitExceeded);
         }
+        Ok(())
     }
 
     fn paginate_filtered<T, F>(
@@ -1435,31 +1461,37 @@ impl ProgramEscrowContract {
         offset: u32,
         limit: u32,
         mut predicate: F,
-    ) -> soroban_sdk::Vec<T>
+    ) -> Result<soroban_sdk::Vec<T>, BatchError>
     where
         T: Clone
             + soroban_sdk::TryFromVal<soroban_sdk::Env, soroban_sdk::Val>
             + soroban_sdk::IntoVal<soroban_sdk::Env, soroban_sdk::Val>,
         F: FnMut(&T) -> bool,
     {
+        // Validate offset for deterministic behavior
+        if offset >= entries.len() as u32 {
+            return Ok(Vec::new(env));
+        }
+
         let mut results = Vec::new(env);
         let mut count = 0u32;
-        let mut skipped = 0u32;
+        let mut processed = 0u32;
 
+        // Process entries in deterministic order (as stored)
         for entry in entries.iter() {
-            if count >= limit {
-                break;
-            }
             if predicate(&entry) {
-                if skipped < offset {
-                    skipped += 1;
-                    continue;
+                if processed >= offset && count < limit {
+                    results.push_back(entry);
+                    count += 1;
                 }
-                results.push_back(entry);
-                count += 1;
+                processed += 1;
+            } else {
+                // Count non-matching entries for offset calculation
+                processed += 1;
             }
         }
-        results
+        
+        Ok(results)
     }
 
     fn order_batch_lock_items(env: &Env, items: &Vec<LockItem>) -> soroban_sdk::Vec<LockItem> {
@@ -5266,8 +5298,8 @@ impl ProgramEscrowContract {
         recipient: Address,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<PayoutRecord> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<PayoutRecord>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         let program_data: ProgramData = env
             .storage()
             .instance()
@@ -5285,10 +5317,10 @@ impl ProgramEscrowContract {
         max_amount: i128,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<PayoutRecord> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<PayoutRecord>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         if min_amount > max_amount {
-            panic!("Invalid amount range");
+            return Err(BatchError::InvalidAmount);
         }
         let program_data: ProgramData = env
             .storage()
@@ -5307,10 +5339,10 @@ impl ProgramEscrowContract {
         max_timestamp: u64,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<PayoutRecord> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<PayoutRecord>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         if min_timestamp > max_timestamp {
-            panic!("Invalid timestamp range");
+            return Err(BatchError::InvalidPaginationOffset);
         }
         let program_data: ProgramData = env
             .storage()
@@ -5322,37 +5354,27 @@ impl ProgramEscrowContract {
         })
     }
 
-    /// Query release schedules by recipient
+    /// Query release schedules by recipient with pagination
     pub fn query_schedules_by_recipient(
         env: Env,
         recipient: Address,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<ProgramReleaseSchedule> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<ProgramReleaseSchedule>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         let schedules: soroban_sdk::Vec<ProgramReleaseSchedule> = env
             .storage()
             .instance()
             .get(&SCHEDULES)
             .unwrap_or_else(|| Vec::new(&env));
-        Self::paginate_filtered(&env, schedules, offset, limit, |schedule| {
-            schedule.recipient == recipient
-        })
-    }
 
-    /// Query release schedules by released status
-    pub fn query_schedules_by_status(
-        env: Env,
-        released: bool,
-        offset: u32,
-        limit: u32,
-    ) -> soroban_sdk::Vec<ProgramReleaseSchedule> {
-        Self::validate_pagination(&env, limit);
-        let schedules: soroban_sdk::Vec<ProgramReleaseSchedule> = env
-            .storage()
-            .instance()
-            .get(&SCHEDULES)
-            .unwrap_or_else(|| Vec::new(&env));
+pub fn preview_split(
+    env: Env,
+    program_id: String,
+    total_amount: i128,
+) -> soroban_sdk::Vec<BeneficiarySplit> {
+    payout_splits::preview_split(&env, &program_id, total_amount)
+}
         Self::paginate_filtered(&env, schedules, offset, limit, |schedule| {
             schedule.released == released
         })
@@ -5364,8 +5386,8 @@ impl ProgramEscrowContract {
         recipient: Address,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<ProgramReleaseHistory> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<ProgramReleaseHistory>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         let history: soroban_sdk::Vec<ProgramReleaseHistory> = env
             .storage()
             .instance()
@@ -5420,8 +5442,8 @@ impl ProgramEscrowContract {
         recipient: Address,
         offset: u32,
         limit: u32,
-    ) -> soroban_sdk::Vec<PayoutRecord> {
-        Self::validate_pagination(&env, limit);
+    ) -> Result<soroban_sdk::Vec<PayoutRecord>, BatchError> {
+        Self::validate_pagination(&env, limit)?;
         let program_data: ProgramData = env
             .storage()
             .instance()
@@ -5964,6 +5986,7 @@ impl ProgramEscrowContract {
 
 #[cfg(test)]
 mod test;
+mod test_pagination;
 // Pre-existing broken test modules excluded until their referenced types/methods are implemented:
 // #[cfg(test)] mod test_archival;
 // #[cfg(test)] mod test_batch_operations;
