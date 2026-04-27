@@ -172,6 +172,26 @@ pub struct MigrationState {
     pub migration_hash: BytesN<32>,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub timestamp: u64,
+    pub migration_hash: BytesN<32>,
+    pub success: bool,
+    pub error_message: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationCommittedEvent {
+    pub target_version: u32,
+    pub hash: BytesN<32>,
+    pub committed_at: u64,
+    pub expires_at: u64,
+}
+
 /// Canonical read model for a multisig upgrade proposal.
 ///
 /// Approval and execution status remain in [`MultiSig`], while upgrade-specific
@@ -848,7 +868,6 @@ impl GrainlifyContract {
     /// Execute a multisig-approved upgrade after the timelock delay has elapsed.
     pub fn execute_upgrade(env: Env, proposal_id: u64) {
         let start = env.ledger().timestamp();
-        Self::require_not_paused(&env);
         Self::require_not_read_only(&env);
 
         if MultiSig::is_state_inconsistent(&env) {

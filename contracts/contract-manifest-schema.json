@@ -190,6 +190,33 @@
             "$ref": "#/$defs/event"
           }
         },
+        "emergency_pause": {
+          "type": "object",
+          "description": "Configuration and policy for emergency pause functionality",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "blocks_upgrades": {
+              "type": "boolean"
+            }
+          }
+        },
+        "timelocked_upgrades": {
+          "type": "object",
+          "description": "Configuration and policy for timelocked upgrades",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "min_delay_seconds": {
+              "type": "integer"
+            },
+            "max_delay_seconds": {
+              "type": "integer"
+            }
+          }
+        },
         "snapshot_rollback": {
           "type": "object",
           "description": "Configuration and policy for on-chain state snapshots and rollbacks",
